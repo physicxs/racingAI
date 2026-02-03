@@ -82,9 +82,9 @@ java -jar target/f1-telemetry-ingestion-1.0.0-SNAPSHOT.jar
 ## Development Phases
 
 - [x] **Phase 1:** Project setup and structure
-- [ ] **Phase 2:** Packet format definitions
-- [ ] **Phase 3:** UDP receiver
-- [ ] **Phase 4:** Packet decoder and validation
+- [x] **Phase 2:** Packet format definitions
+- [x] **Phase 3:** UDP receiver
+- [x] **Phase 4:** Packet decoder and validation
 - [ ] **Phase 5:** State management
 - [ ] **Phase 6:** Nearby cars selection logic
 - [ ] **Phase 7:** JSON output stream
