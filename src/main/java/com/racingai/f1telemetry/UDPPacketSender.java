@@ -59,15 +59,37 @@ public class UDPPacketSender {
         // Header
         writeHeader(buffer, (byte) 0, frameId); // PacketId 0 = Motion
 
-        // Motion data for 22 cars (simplified - just write zeros)
+        // Motion data for 22 cars (60 bytes each)
         for (int i = 0; i < 22; i++) {
-            // Each car: 60 bytes of motion data
-            buffer.putFloat(100.0f + i);  // worldPositionX
-            buffer.putFloat(0.0f);         // worldPositionY
-            buffer.putFloat(200.0f + i);  // worldPositionZ
-            for (int j = 0; j < 15; j++) {
-                buffer.putFloat(0.0f);
-            }
+            // Position (3 floats = 12 bytes)
+            buffer.putFloat(100.0f + i * 10);  // worldPositionX
+            buffer.putFloat(0.0f);              // worldPositionY
+            buffer.putFloat(200.0f + i * 10);  // worldPositionZ
+
+            // Velocity (3 floats = 12 bytes)
+            buffer.putFloat(50.0f);             // worldVelocityX
+            buffer.putFloat(0.0f);              // worldVelocityY
+            buffer.putFloat(70.0f);             // worldVelocityZ
+
+            // Forward direction (3 int16 = 6 bytes)
+            buffer.putShort((short) 0);         // worldForwardDirX
+            buffer.putShort((short) 0);         // worldForwardDirY
+            buffer.putShort((short) 32767);     // worldForwardDirZ
+
+            // Right direction (3 int16 = 6 bytes)
+            buffer.putShort((short) 32767);     // worldRightDirX
+            buffer.putShort((short) 0);         // worldRightDirY
+            buffer.putShort((short) 0);         // worldRightDirZ
+
+            // G-forces (3 floats = 12 bytes)
+            buffer.putFloat(0.5f);              // gForceLateral
+            buffer.putFloat(1.2f);              // gForceLongitudinal
+            buffer.putFloat(-0.3f);             // gForceVertical
+
+            // Rotation (3 floats = 12 bytes)
+            buffer.putFloat(0.1f);              // yaw
+            buffer.putFloat(0.0f);              // pitch
+            buffer.putFloat(0.0f);              // roll
         }
 
         sendPacket(socket, address, buffer.array());

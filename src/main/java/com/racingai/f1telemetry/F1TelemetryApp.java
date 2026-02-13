@@ -57,35 +57,35 @@ public class F1TelemetryApp {
                         motionPackets.incrementAndGet();
                         if (count == 1) {
                             PacketMotionData motion = (PacketMotionData) packet;
-                            logger.info("First Motion packet received! Frame: {}, Session time: {:.2f}s",
+                            logger.info(String.format("First Motion packet received! Frame: %d, Session time: %.2fs",
                                 motion.getHeader().getFrameIdentifier(),
-                                motion.getHeader().getSessionTime());
+                                motion.getHeader().getSessionTime()));
                         }
                     } else if (packet instanceof PacketLapData) {
                         lapDataPackets.incrementAndGet();
                         PacketLapData lapData = (PacketLapData) packet;
                         LapData playerLap = lapData.getLapData(lapData.getHeader().getPlayerCarIndex());
-                        logger.info("Lap Data - Position: {}, Lap: {}, Distance: {:.1f}m, Speed trap: {:.1f} km/h",
+                        logger.info(String.format("Lap Data - Position: %d, Lap: %d, Distance: %.1fm, Speed trap: %.1f km/h",
                             playerLap.getCarPosition(),
                             playerLap.getCurrentLapNum(),
                             playerLap.getLapDistance(),
-                            playerLap.getSpeedTrapFastestSpeed());
+                            playerLap.getSpeedTrapFastestSpeed()));
                     } else if (packet instanceof PacketCarTelemetryData) {
                         telemetryPackets.incrementAndGet();
                         PacketCarTelemetryData telemetry = (PacketCarTelemetryData) packet;
                         CarTelemetryData playerTelemetry = telemetry.getCarTelemetryData(telemetry.getHeader().getPlayerCarIndex());
-                        logger.info("Telemetry - Speed: {} km/h, Gear: {}, Throttle: {:.1f}%, Brake: {:.1f}%",
+                        logger.info(String.format("Telemetry - Speed: %d km/h, Gear: %d, Throttle: %.1f%%, Brake: %.1f%%",
                             playerTelemetry.getSpeed(),
                             playerTelemetry.getGear(),
                             playerTelemetry.getThrottle() * 100,
-                            playerTelemetry.getBrake() * 100);
+                            playerTelemetry.getBrake() * 100));
                     } else if (packet instanceof PacketCarDamageData) {
                         damagePackets.incrementAndGet();
                         PacketCarDamageData damage = (PacketCarDamageData) packet;
                         CarDamageData playerDamage = damage.getCarDamageData(damage.getHeader().getPlayerCarIndex());
                         float[] tyreWear = playerDamage.getTyresWear();
-                        logger.info("Damage - Tyre wear: FL={:.1f}%, FR={:.1f}%, RL={:.1f}%, RR={:.1f}%",
-                            tyreWear[2], tyreWear[3], tyreWear[0], tyreWear[1]);
+                        logger.info(String.format("Damage - Tyre wear: FL=%.1f%%, FR=%.1f%%, RL=%.1f%%, RR=%.1f%%",
+                            tyreWear[2], tyreWear[3], tyreWear[0], tyreWear[1]));
                     }
 
                     // Log summary every 100 packets
