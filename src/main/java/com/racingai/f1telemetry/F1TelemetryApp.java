@@ -1,7 +1,9 @@
 package com.racingai.f1telemetry;
 
+import com.racingai.f1telemetry.decoder.PacketDecoder;
 import com.racingai.f1telemetry.decoder.PacketListener;
 import com.racingai.f1telemetry.decoder.UDPReceiver;
+import com.racingai.f1telemetry.packets.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,19 +31,69 @@ public class F1TelemetryApp {
         logger.info("UDP Port: {}", DEFAULT_UDP_PORT);
         logger.info("Output Rate: {} Hz", OUTPUT_RATE_HZ);
 
-        // Phase 3: UDP receiver implementation
+        // Phase 3 & 4: UDP receiver and decoder
         UDPReceiver receiver = new UDPReceiver(DEFAULT_UDP_PORT);
+        PacketDecoder decoder = new PacketDecoder();
 
-        // Add a simple packet listener for testing
+        // Packet statistics
         AtomicLong packetCount = new AtomicLong(0);
+        AtomicLong motionPackets = new AtomicLong(0);
+        AtomicLong lapDataPackets = new AtomicLong(0);
+        AtomicLong telemetryPackets = new AtomicLong(0);
+        AtomicLong damagePackets = new AtomicLong(0);
+
+        // Add packet listener with decoder
         receiver.addListener(new PacketListener() {
             @Override
             public void onPacketReceived(byte[] data, int length) {
                 long count = packetCount.incrementAndGet();
-                if (count == 1) {
-                    logger.info("First packet received: {} bytes", length);
-                } else if (count % 100 == 0) {
-                    logger.info("Packets received: {}", count);
+
+                // Decode the packet
+                Object packet = decoder.decodePacket(data, length);
+
+                if (packet != null) {
+                    // Track packet types
+                    if (packet instanceof PacketMotionData) {
+                        motionPackets.incrementAndGet();
+                        if (count == 1) {
+                            PacketMotionData motion = (PacketMotionData) packet;
+                            logger.info("First Motion packet received! Frame: {}, Session time: {:.2f}s",
+                                motion.getHeader().getFrameIdentifier(),
+                                motion.getHeader().getSessionTime());
+                        }
+                    } else if (packet instanceof PacketLapData) {
+                        lapDataPackets.incrementAndGet();
+                        PacketLapData lapData = (PacketLapData) packet;
+                        LapData playerLap = lapData.getLapData(lapData.getHeader().getPlayerCarIndex());
+                        logger.info("Lap Data - Position: {}, Lap: {}, Distance: {:.1f}m, Speed trap: {:.1f} km/h",
+                            playerLap.getCarPosition(),
+                            playerLap.getCurrentLapNum(),
+                            playerLap.getLapDistance(),
+                            playerLap.getSpeedTrapFastestSpeed());
+                    } else if (packet instanceof PacketCarTelemetryData) {
+                        telemetryPackets.incrementAndGet();
+                        PacketCarTelemetryData telemetry = (PacketCarTelemetryData) packet;
+                        CarTelemetryData playerTelemetry = telemetry.getCarTelemetryData(telemetry.getHeader().getPlayerCarIndex());
+                        logger.info("Telemetry - Speed: {} km/h, Gear: {}, Throttle: {:.1f}%, Brake: {:.1f}%",
+                            playerTelemetry.getSpeed(),
+                            playerTelemetry.getGear(),
+                            playerTelemetry.getThrottle() * 100,
+                            playerTelemetry.getBrake() * 100);
+                    } else if (packet instanceof PacketCarDamageData) {
+                        damagePackets.incrementAndGet();
+                        PacketCarDamageData damage = (PacketCarDamageData) packet;
+                        CarDamageData playerDamage = damage.getCarDamageData(damage.getHeader().getPlayerCarIndex());
+                        float[] tyreWear = playerDamage.getTyresWear();
+                        logger.info("Damage - Tyre wear: FL={:.1f}%, FR={:.1f}%, RL={:.1f}%, RR={:.1f}%",
+                            tyreWear[2], tyreWear[3], tyreWear[0], tyreWear[1]);
+                    }
+
+                    // Log summary every 100 packets
+                    if (count % 100 == 0) {
+                        logger.info("Packets: {} total (Motion: {}, Lap: {}, Telemetry: {}, Damage: {})",
+                            count, motionPackets.get(), lapDataPackets.get(),
+                            telemetryPackets.get(), damagePackets.get());
+                    }
                 }
             }
 
@@ -61,7 +113,12 @@ public class F1TelemetryApp {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 logger.info("Shutdown signal received");
                 receiver.stop();
-                logger.info("Total packets received: {}", packetCount.get());
+                logger.info("=== Packet Statistics ===");
+                logger.info("Total packets: {}", packetCount.get());
+                logger.info("Motion packets: {}", motionPackets.get());
+                logger.info("Lap data packets: {}", lapDataPackets.get());
+                logger.info("Telemetry packets: {}", telemetryPackets.get());
+                logger.info("Damage packets: {}", damagePackets.get());
             }));
 
             // Keep main thread alive
