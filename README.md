@@ -2,6 +2,8 @@
 
 A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry data.
 
+**Status:** ✅ Complete | All 9 development phases finished | 19 unit tests passing
+
 ## Overview
 
 This project handles telemetry data ingestion from F1 2025 via UDP, providing a clean JSON stream of racing data for analysis and processing.
@@ -30,10 +32,11 @@ This project handles telemetry data ingestion from F1 2025 via UDP, providing a 
 ```
 src/main/java/com/racingai/f1telemetry/
 ├── F1TelemetryApp.java          # Main application entry point
+├── config/                       # Configuration loading
 ├── packets/                      # F1 2025 packet structure definitions
 ├── decoder/                      # UDP reception and binary decoding
 ├── state/                        # Live telemetry state management
-├── output/                       # JSON stream generation
+├── output/                       # JSON stream generation (JSONL at 30 Hz)
 └── utils/                        # Utility classes and helpers
 ```
 
@@ -105,7 +108,7 @@ See [TESTING.md](TESTING.md) for complete testing instructions including:
 - [x] **Phase 6:** Nearby cars selection logic
 - [x] **Phase 7:** JSON output stream
 - [x] **Phase 8:** Integration and main loop
-- [ ] **Phase 9:** Testing and validation
+- [x] **Phase 9:** Testing and validation
 
 ## Output Format
 

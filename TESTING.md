@@ -17,9 +17,12 @@ mvn exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp"
 You should see:
 ```
 F1 2025 Telemetry Ingestion System - Starting...
-UDP Port: 20777
-Output Rate: 30 Hz
-UDP receiver started. Listening for F1 2025 telemetry on port 20777...
+Configuration loaded:
+  UDP Port: 20777
+  Output Rate: 30 Hz
+  Nearby Cars: max=6, timeGap=1.5s, ahead=4, behind=2
+UDP receiver started on port 20777
+JSON output started at 30 Hz
 Press Ctrl+C to stop
 ```
 
@@ -44,13 +47,18 @@ Sent 200 packets (30.0 Hz)
 
 ### Step 3: Observe Received Packets
 
-In the receiver window, you should now see:
+In the receiver window, you should now see JSON output streaming at 30 Hz:
 
 ```
-First Motion packet received! Frame: 0, Session time: 0.00s
-Lap Data - Position: 1, Lap: 5, Distance: 1500.0m, Speed trap: 320.5 km/h
-Telemetry - Speed: 250 km/h, Gear: 7, Throttle: 80.0%, Brake: 0.0%
-Packets: 100 total (Motion: 97, Lap: 10, Telemetry: 10, Damage: 0)
+{"timestamp":1771034117788,"sessionTime":0.5,"frameId":15,"player":{"position":1,"lapNumber":5,"lapDistance":1500.0,"speed":250,"gear":7,"throttle":0.8,"brake":0.0,"steering":0.0,"tyreWear":{"rearLeft":0.0,"rearRight":0.0,"frontLeft":0.0,"frontRight":0.0}},"nearbyCars":[]}
+{"timestamp":1771034117821,"sessionTime":0.53,"frameId":16,"player":{"position":1,"lapNumber":5,"lapDistance":1510.5,"speed":252,"gear":7,"throttle":0.85,"brake":0.0,"steering":0.05,"tyreWear":{"rearLeft":0.0,"rearRight":0.0,"frontLeft":0.0,"frontRight":0.0}},"nearbyCars":[]}
+...
+```
+
+Plus occasional logging messages:
+```
+First packet received - telemetry stream active
+Packets: 1000 total (Motion: 970, Lap: 10, Telemetry: 10, Damage: 10)
 ...
 ```
 
@@ -139,12 +147,16 @@ If F1 2025 is on a different machine than the receiver:
    - Once on track, the receiver should start receiving packets
 
 3. **What you should see:**
+
+   Streaming JSON output at 30 Hz:
+   ```json
+   {"timestamp":1771034117788,"sessionTime":421.569,"frameId":17647,"player":{"position":9,"lapNumber":5,"lapDistance":1.4140625,"speed":304,"gear":8,"throttle":1.0,"brake":0.0,"steering":8.20861E-4,"tyreWear":{"rearLeft":13.52763,"rearRight":9.815713,"frontLeft":13.483042,"frontRight":5.848298}},"nearbyCars":[{"carIndex":0,"position":10,"gap":0.228},{"carIndex":7,"position":11,"gap":0.662},{"carIndex":8,"position":12,"gap":1.145}]}
    ```
-   First Motion packet received! Frame: 123, Session time: 4.06s
-   Lap Data - Position: 12, Lap: 1, Distance: 234.5m, Speed trap: 0.0 km/h
-   Telemetry - Speed: 245 km/h, Gear: 6, Throttle: 95.2%, Brake: 0.0%
-   Damage - Tyre wear: FL=2.3%, FR=2.4%, RL=2.1%, RR=2.2%
-   Packets: 100 total (Motion: 60, Lap: 1, Telemetry: 30, Damage: 9)
+
+   Plus logging messages:
+   ```
+   First packet received - telemetry stream active
+   Packets: 1000 total (Motion: 600, Lap: 30, Telemetry: 300, Damage: 70)
    ```
 
 4. **Drive around the track** and observe live telemetry data
@@ -206,12 +218,23 @@ The receiver currently decodes: **Motion**, **Lap Data**, **Telemetry**, and **D
 
 ---
 
-## Next Steps
+## JSON Output Format
 
-Once you've verified the receiver works:
+The system outputs newline-delimited JSON (JSONL) at 30 Hz. Each line contains:
 
-1. **Phase 5:** Implement state management to merge packet data
-2. **Phase 6:** Add nearby cars selection logic
-3. **Phase 7:** Generate JSON output stream at 30 Hz
-4. **Phase 8:** Full integration testing
-5. **Phase 9:** Performance validation with real racing data
+- **timestamp**: Unix timestamp in milliseconds
+- **sessionTime**: Game session time in seconds
+- **frameId**: Game frame identifier
+- **player**: Player car telemetry
+  - position, lapNumber, lapDistance
+  - speed, gear, throttle, brake, steering
+  - tyreWear (all four tyres)
+- **nearbyCars**: Array of nearby cars (up to 6 within 1.5s gap)
+  - carIndex, position, gap (in seconds)
+
+You can redirect the JSON output to a file:
+```bash
+mvn exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" > telemetry.jsonl
+```
+
+The logging goes to stderr, so it won't interfere with the JSON output to stdout.
