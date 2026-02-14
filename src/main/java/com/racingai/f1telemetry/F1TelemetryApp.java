@@ -5,11 +5,13 @@ import com.racingai.f1telemetry.decoder.PacketListener;
 import com.racingai.f1telemetry.decoder.UDPReceiver;
 import com.racingai.f1telemetry.packets.*;
 import com.racingai.f1telemetry.state.CarState;
+import com.racingai.f1telemetry.state.NearbyCarsSelector;
 import com.racingai.f1telemetry.state.StateManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -39,6 +41,9 @@ public class F1TelemetryApp {
 
         // Phase 5: State management
         StateManager stateManager = new StateManager();
+
+        // Phase 6: Nearby cars selection
+        NearbyCarsSelector nearbyCarsSelector = new NearbyCarsSelector();
 
         // Packet statistics
         AtomicLong packetCount = new AtomicLong(0);
@@ -111,6 +116,21 @@ public class F1TelemetryApp {
                                 playerCar.getSpeed(),
                                 playerCar.getGear(),
                                 playerCar.getLapDistance()));
+
+                            // Show nearby cars
+                            List<CarState> nearbyCars = nearbyCarsSelector.selectNearbyCars(stateManager.getSessionState());
+                            if (!nearbyCars.isEmpty()) {
+                                StringBuilder nearbyInfo = new StringBuilder("Nearby cars: ");
+                                for (int i = 0; i < nearbyCars.size(); i++) {
+                                    CarState car = nearbyCars.get(i);
+                                    double gap = NearbyCarsSelector.calculateGap(playerCar, car);
+                                    if (i > 0) nearbyInfo.append(", ");
+                                    nearbyInfo.append(String.format("P%d (%+.1fs)", car.getCarPosition(), gap));
+                                }
+                                logger.info(nearbyInfo.toString());
+                            } else {
+                                logger.info("Nearby cars: none within 1.5s");
+                            }
                         }
                     }
                 }
