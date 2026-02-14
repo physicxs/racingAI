@@ -1,5 +1,6 @@
 package com.racingai.f1telemetry;
 
+import com.racingai.f1telemetry.config.AppConfig;
 import com.racingai.f1telemetry.decoder.PacketDecoder;
 import com.racingai.f1telemetry.decoder.PacketListener;
 import com.racingai.f1telemetry.decoder.UDPReceiver;
@@ -31,23 +32,26 @@ public class F1TelemetryApp {
 
     private static final Logger logger = LoggerFactory.getLogger(F1TelemetryApp.class);
 
-    private static final int DEFAULT_UDP_PORT = 20777;
-    private static final int OUTPUT_RATE_HZ = 30;
-
     public static void main(String[] args) {
         logger.info("F1 2025 Telemetry Ingestion System - Starting...");
-        logger.info("UDP Port: {}", DEFAULT_UDP_PORT);
-        logger.info("Output Rate: {} Hz", OUTPUT_RATE_HZ);
+
+        // Load configuration
+        AppConfig config = new AppConfig();
 
         // Phase 3 & 4: UDP receiver and decoder
-        UDPReceiver receiver = new UDPReceiver(DEFAULT_UDP_PORT);
+        UDPReceiver receiver = new UDPReceiver(config.getUdpPort());
         PacketDecoder decoder = new PacketDecoder();
 
         // Phase 5: State management
         StateManager stateManager = new StateManager();
 
         // Phase 6: Nearby cars selection
-        NearbyCarsSelector nearbyCarsSelector = new NearbyCarsSelector();
+        NearbyCarsSelector nearbyCarsSelector = new NearbyCarsSelector(
+            config.getNearbyTimeGapSeconds(),
+            config.getNearbyMaxCars(),
+            config.getNearbyAheadPreferred(),
+            config.getNearbyBehindPreferred()
+        );
 
         // Phase 7: JSON output generator
         JsonOutputGenerator jsonOutputGenerator = new JsonOutputGenerator(nearbyCarsSelector);
@@ -76,90 +80,21 @@ public class F1TelemetryApp {
                     if (packet instanceof PacketMotionData) {
                         motionPackets.incrementAndGet();
                         if (count == 1) {
-                            PacketMotionData motion = (PacketMotionData) packet;
-                            logger.info(String.format("First Motion packet received! Frame: %d, Session time: %.2fs",
-                                motion.getHeader().getFrameIdentifier(),
-                                motion.getHeader().getSessionTime()));
+                            logger.info("First packet received - telemetry stream active");
                         }
                     } else if (packet instanceof PacketLapData) {
                         lapDataPackets.incrementAndGet();
-                        PacketLapData lapData = (PacketLapData) packet;
-                        LapData playerLap = lapData.getLapData(lapData.getHeader().getPlayerCarIndex());
-                        logger.info(String.format("Lap Data - Position: %d, Lap: %d, Distance: %.1fm, Speed trap: %.1f km/h",
-                            playerLap.getCarPosition(),
-                            playerLap.getCurrentLapNum(),
-                            playerLap.getLapDistance(),
-                            playerLap.getSpeedTrapFastestSpeed()));
                     } else if (packet instanceof PacketCarTelemetryData) {
                         telemetryPackets.incrementAndGet();
-                        PacketCarTelemetryData telemetry = (PacketCarTelemetryData) packet;
-                        CarTelemetryData playerTelemetry = telemetry.getCarTelemetryData(telemetry.getHeader().getPlayerCarIndex());
-                        logger.info(String.format("Telemetry - Speed: %d km/h, Gear: %d, Throttle: %.1f%%, Brake: %.1f%%",
-                            playerTelemetry.getSpeed(),
-                            playerTelemetry.getGear(),
-                            playerTelemetry.getThrottle() * 100,
-                            playerTelemetry.getBrake() * 100));
                     } else if (packet instanceof PacketCarDamageData) {
                         damagePackets.incrementAndGet();
-                        PacketCarDamageData damage = (PacketCarDamageData) packet;
-                        CarDamageData playerDamage = damage.getCarDamageData(damage.getHeader().getPlayerCarIndex());
-                        float[] tyreWear = playerDamage.getTyresWear();
-                        logger.info(String.format("Damage - Tyre wear: FL=%.1f%%, FR=%.1f%%, RL=%.1f%%, RR=%.1f%%",
-                            tyreWear[2], tyreWear[3], tyreWear[0], tyreWear[1]));
                     }
 
-                    // Log summary every 100 packets
-                    if (count % 100 == 0) {
+                    // Log summary every 1000 packets
+                    if (count % 1000 == 0) {
                         logger.info("Packets: {} total (Motion: {}, Lap: {}, Telemetry: {}, Damage: {})",
                             count, motionPackets.get(), lapDataPackets.get(),
                             telemetryPackets.get(), damagePackets.get());
-
-                        // Show player car state from state manager
-                        CarState playerCar = stateManager.getSessionState().getPlayerCar();
-                        if (playerCar != null) {
-                            logger.info(String.format("Player State - Position: %d, Lap: %d, Speed: %d km/h, Gear: %d, Distance: %.1fm",
-                                playerCar.getCarPosition(),
-                                playerCar.getCurrentLapNum(),
-                                playerCar.getSpeed(),
-                                playerCar.getGear(),
-                                playerCar.getLapDistance()));
-
-                            // Show nearby cars
-                            List<CarState> nearbyCars = nearbyCarsSelector.selectNearbyCars(stateManager.getSessionState());
-                            if (!nearbyCars.isEmpty()) {
-                                StringBuilder nearbyInfo = new StringBuilder("Nearby cars: ");
-                                for (int i = 0; i < nearbyCars.size(); i++) {
-                                    CarState car = nearbyCars.get(i);
-                                    double gap = NearbyCarsSelector.calculateGap(playerCar, car);
-                                    if (i > 0) nearbyInfo.append(", ");
-                                    nearbyInfo.append(String.format("P%d (%+.1fs)", car.getCarPosition(), gap));
-                                }
-                                logger.info(nearbyInfo.toString());
-                            } else {
-                                // Debug: show why no cars were selected
-                                logger.info("Nearby cars: none within 1.5s");
-                                logger.info(String.format("  DEBUG: Player delta to leader: %.2fs, driverStatus: %d, isActive: %b",
-                                    playerCar.getDeltaToRaceLeaderSeconds(),
-                                    playerCar.getDriverStatus(),
-                                    playerCar.isActive()));
-
-                                // Show first few cars for debugging
-                                int debugCount = 0;
-                                for (CarState car : stateManager.getSessionState().getAllCars()) {
-                                    if (car.getCarIndex() != playerCar.getCarIndex() && debugCount < 3) {
-                                        double gap = NearbyCarsSelector.calculateGap(playerCar, car);
-                                        logger.info(String.format("  DEBUG: Car %d: Position=%d, Delta=%.2fs, Gap=%.2fs, Active=%b, DriverStatus=%d",
-                                            car.getCarIndex(),
-                                            car.getCarPosition(),
-                                            car.getDeltaToRaceLeaderSeconds(),
-                                            gap,
-                                            car.isActive(),
-                                            car.getDriverStatus()));
-                                        debugCount++;
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -176,10 +111,10 @@ public class F1TelemetryApp {
         // Start UDP receiver
         try {
             receiver.start();
-            logger.info("UDP receiver started. Listening for F1 2025 telemetry on port {}...", DEFAULT_UDP_PORT);
+            logger.info("UDP receiver started on port {}", config.getUdpPort());
 
-            // Start JSON output at 30 Hz
-            long periodMs = 1000 / OUTPUT_RATE_HZ; // 33ms for 30 Hz
+            // Start JSON output
+            long periodMs = 1000 / config.getOutputRateHz();
             outputExecutor.scheduleAtFixedRate(() -> {
                 String json = jsonOutputGenerator.generateSnapshot(stateManager.getSessionState());
                 if (json != null) {
@@ -187,7 +122,7 @@ public class F1TelemetryApp {
                 }
             }, 0, periodMs, TimeUnit.MILLISECONDS);
 
-            logger.info("JSON output started at {} Hz", OUTPUT_RATE_HZ);
+            logger.info("JSON output started at {} Hz", config.getOutputRateHz());
             logger.info("Press Ctrl+C to stop");
 
             // Add shutdown hook for graceful stop
