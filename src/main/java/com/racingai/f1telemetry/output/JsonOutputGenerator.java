@@ -52,6 +52,10 @@ public class JsonOutputGenerator {
             snapshot.setSessionTime(sessionState.getSessionTime());
             snapshot.setFrameId(sessionState.getFrameIdentifier());
 
+            // Meta data (track ID)
+            MetaData meta = buildMetaData(sessionState);
+            snapshot.setMeta(meta);
+
             // Player data
             PlayerData player = buildPlayerData(playerCar);
             snapshot.setPlayer(player);
@@ -68,6 +72,14 @@ public class JsonOutputGenerator {
             logger.error("Failed to serialize telemetry snapshot: {}", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Build meta data from session state.
+     */
+    private MetaData buildMetaData(SessionState sessionState) {
+        Byte trackId = sessionState.getTrackId();
+        return new MetaData(trackId != null ? trackId.intValue() : null);
     }
 
     /**
@@ -105,10 +117,16 @@ public class JsonOutputGenerator {
 
         for (CarState car : nearbyCars) {
             double gap = NearbyCarsSelector.calculateGap(playerCar, car);
+            WorldPosition worldPos = new WorldPosition(
+                car.getWorldPositionX(),
+                car.getWorldPositionY(),
+                car.getWorldPositionZ()
+            );
             NearbyCarData nearbyCarData = new NearbyCarData(
                 car.getCarIndex(),
                 car.getCarPosition(),
-                gap
+                gap,
+                worldPos
             );
             nearbyCarDataList.add(nearbyCarData);
         }

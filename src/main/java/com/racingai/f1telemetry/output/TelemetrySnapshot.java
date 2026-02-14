@@ -19,6 +19,9 @@ public class TelemetrySnapshot {
     @JsonProperty("frameId")
     private long frameId;
 
+    @JsonProperty("meta")
+    private MetaData meta;
+
     @JsonProperty("player")
     private PlayerData player;
 
@@ -60,6 +63,14 @@ public class TelemetrySnapshot {
 
     public void setFrameId(long frameId) {
         this.frameId = frameId;
+    }
+
+    public MetaData getMeta() {
+        return meta;
+    }
+
+    public void setMeta(MetaData meta) {
+        this.meta = meta;
     }
 
     public PlayerData getPlayer() {

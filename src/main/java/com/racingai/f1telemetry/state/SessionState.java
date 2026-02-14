@@ -17,6 +17,7 @@ public class SessionState {
     private long sessionUID;
     private float sessionTime;
     private long frameIdentifier;
+    private Byte trackId;  // Nullable - may not be available initially
 
     public SessionState() {
         this.cars = new CarState[PacketConstants.MAX_CARS];
@@ -68,9 +69,17 @@ public class SessionState {
         this.playerCarIndex = playerIndex;
     }
 
+    /**
+     * Update track ID from session packet.
+     */
+    public synchronized void updateTrackId(byte trackId) {
+        this.trackId = trackId;
+    }
+
     // Getters
     public short getPlayerCarIndex() { return playerCarIndex; }
     public long getSessionUID() { return sessionUID; }
     public float getSessionTime() { return sessionTime; }
     public long getFrameIdentifier() { return frameIdentifier; }
+    public Byte getTrackId() { return trackId; }
 }

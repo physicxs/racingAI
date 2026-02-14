@@ -16,13 +16,17 @@ public class NearbyCarData {
     @JsonProperty("gap")
     private double gap;
 
+    @JsonProperty("world_pos_m")
+    private WorldPosition worldPosM;
+
     public NearbyCarData() {
     }
 
-    public NearbyCarData(int carIndex, int position, double gap) {
+    public NearbyCarData(int carIndex, int position, double gap, WorldPosition worldPosM) {
         this.carIndex = carIndex;
         this.position = position;
         this.gap = gap;
+        this.worldPosM = worldPosM;
     }
 
     // Getters and setters
@@ -48,5 +52,13 @@ public class NearbyCarData {
 
     public void setGap(double gap) {
         this.gap = gap;
+    }
+
+    public WorldPosition getWorldPosM() {
+        return worldPosM;
+    }
+
+    public void setWorldPosM(WorldPosition worldPosM) {
+        this.worldPosM = worldPosM;
     }
 }

@@ -171,7 +171,9 @@ public class StateManager {
             header.getFrameIdentifier(),
             header.getPlayerCarIndex()
         );
-        // Session-specific data can be added to SessionState in future if needed
+
+        // Update track ID
+        sessionState.updateTrackId(packet.getTrackId());
     }
 
     /**
