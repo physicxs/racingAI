@@ -3,6 +3,7 @@ package com.racingai.f1telemetry;
 import com.racingai.f1telemetry.decoder.PacketDecoder;
 import com.racingai.f1telemetry.decoder.PacketListener;
 import com.racingai.f1telemetry.decoder.UDPReceiver;
+import com.racingai.f1telemetry.output.JsonOutputGenerator;
 import com.racingai.f1telemetry.packets.*;
 import com.racingai.f1telemetry.state.CarState;
 import com.racingai.f1telemetry.state.NearbyCarsSelector;
@@ -12,6 +13,9 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -44,6 +48,9 @@ public class F1TelemetryApp {
 
         // Phase 6: Nearby cars selection
         NearbyCarsSelector nearbyCarsSelector = new NearbyCarsSelector();
+
+        // Phase 7: JSON output generator
+        JsonOutputGenerator jsonOutputGenerator = new JsonOutputGenerator(nearbyCarsSelector);
 
         // Packet statistics
         AtomicLong packetCount = new AtomicLong(0);
@@ -163,15 +170,30 @@ public class F1TelemetryApp {
             }
         });
 
+        // Create JSON output executor
+        ScheduledExecutorService outputExecutor = Executors.newSingleThreadScheduledExecutor();
+
         // Start UDP receiver
         try {
             receiver.start();
             logger.info("UDP receiver started. Listening for F1 2025 telemetry on port {}...", DEFAULT_UDP_PORT);
+
+            // Start JSON output at 30 Hz
+            long periodMs = 1000 / OUTPUT_RATE_HZ; // 33ms for 30 Hz
+            outputExecutor.scheduleAtFixedRate(() -> {
+                String json = jsonOutputGenerator.generateSnapshot(stateManager.getSessionState());
+                if (json != null) {
+                    System.out.println(json);
+                }
+            }, 0, periodMs, TimeUnit.MILLISECONDS);
+
+            logger.info("JSON output started at {} Hz", OUTPUT_RATE_HZ);
             logger.info("Press Ctrl+C to stop");
 
             // Add shutdown hook for graceful stop
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 logger.info("Shutdown signal received");
+                outputExecutor.shutdown();
                 receiver.stop();
                 logger.info("=== Packet Statistics ===");
                 logger.info("Total packets: {}", packetCount.get());
@@ -189,6 +211,7 @@ public class F1TelemetryApp {
             System.exit(1);
         } catch (InterruptedException e) {
             logger.info("Application interrupted");
+            outputExecutor.shutdown();
             receiver.stop();
         }
     }
