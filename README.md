@@ -112,12 +112,59 @@ See [TESTING.md](TESTING.md) for complete testing instructions including:
 
 ## Output Format
 
-The application outputs newline-delimited JSON (JSONL) at 30 Hz, with each line containing:
-- Player inputs (steering, throttle, brake, gear, speed)
-- Player position and lap distance
-- Nearby cars list (up to 6 cars)
-- Tyre wear data (where available)
-- Session metadata
+The application outputs newline-delimited JSON (JSONL) at 30 Hz. Each line contains:
+
+```json
+{
+  "timestamp": 1771034117788,
+  "sessionTime": 421.569,
+  "frameId": 17647,
+  "meta": {
+    "track_id": 5
+  },
+  "player": {
+    "position": 9,
+    "lapNumber": 5,
+    "lapDistance": 1.4140625,
+    "speed": 304,
+    "gear": 8,
+    "throttle": 1.0,
+    "brake": 0.0,
+    "steering": 0.000820861,
+    "tyreWear": {
+      "rearLeft": 13.52763,
+      "rearRight": 9.815713,
+      "frontLeft": 13.483042,
+      "frontRight": 5.848298
+    }
+  },
+  "nearbyCars": [
+    {
+      "carIndex": 0,
+      "position": 10,
+      "gap": 0.228,
+      "world_pos_m": {
+        "x": 123.45,
+        "y": 1.23,
+        "z": 456.78
+      }
+    }
+  ]
+}
+```
+
+**Fields:**
+- `timestamp`: Unix timestamp (milliseconds)
+- `sessionTime`: Game session time (seconds)
+- `frameId`: Game frame identifier
+- `meta.track_id`: Track identifier (-1 if unknown)
+- `player`: Player car telemetry
+  - Inputs: steering, throttle, brake
+  - State: position, lapNumber, lapDistance, speed, gear
+  - Tyre wear: all four tyres (percentage)
+- `nearbyCars`: Up to 6 cars within 1.5s gap
+  - `carIndex`, `position`, `gap` (seconds)
+  - `world_pos_m`: 3D position (x, y, z in meters)
 
 ## Known Issues
 
