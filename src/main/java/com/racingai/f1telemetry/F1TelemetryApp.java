@@ -129,7 +129,28 @@ public class F1TelemetryApp {
                                 }
                                 logger.info(nearbyInfo.toString());
                             } else {
+                                // Debug: show why no cars were selected
                                 logger.info("Nearby cars: none within 1.5s");
+                                logger.info(String.format("  DEBUG: Player delta to leader: %.2fs, driverStatus: %d, isActive: %b",
+                                    playerCar.getDeltaToRaceLeaderSeconds(),
+                                    playerCar.getDriverStatus(),
+                                    playerCar.isActive()));
+
+                                // Show first few cars for debugging
+                                int debugCount = 0;
+                                for (CarState car : stateManager.getSessionState().getAllCars()) {
+                                    if (car.getCarIndex() != playerCar.getCarIndex() && debugCount < 3) {
+                                        double gap = NearbyCarsSelector.calculateGap(playerCar, car);
+                                        logger.info(String.format("  DEBUG: Car %d: Position=%d, Delta=%.2fs, Gap=%.2fs, Active=%b, DriverStatus=%d",
+                                            car.getCarIndex(),
+                                            car.getCarPosition(),
+                                            car.getDeltaToRaceLeaderSeconds(),
+                                            gap,
+                                            car.isActive(),
+                                            car.getDriverStatus()));
+                                        debugCount++;
+                                    }
+                                }
                             }
                         }
                     }
