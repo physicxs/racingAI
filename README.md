@@ -55,6 +55,11 @@ Configure F1 2025 telemetry settings:
 - **UDP Format:** 2025
 - **UDP Send Rate:** 30 Hz
 - **UDP Port:** 20777
+- **UDP IP Address:**
+  - `127.0.0.1` if game and receiver on same machine
+  - Your receiver's IP address (e.g., `192.168.1.116`) if on different machines
+
+For detailed setup instructions including cross-machine configuration, see [TESTING.md](TESTING.md).
 
 ## Building
 
@@ -78,6 +83,17 @@ mvn exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp"
 # Or run the packaged JAR
 java -jar target/f1-telemetry-ingestion-1.0.0-SNAPSHOT.jar
 ```
+
+## Testing
+
+The system can be tested with:
+1. **Simulated packets** - Use `UDPPacketSender` to send mock F1 2025 packets (no game required)
+2. **Real F1 2025 game** - Works on same machine or across network
+
+See [TESTING.md](TESTING.md) for complete testing instructions including:
+- Same-machine setup
+- Cross-machine/network setup
+- Troubleshooting guide
 
 ## Development Phases
 

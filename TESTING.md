@@ -80,15 +80,52 @@ Damage packets: 0
 
 ### F1 2025 Game Configuration
 
+#### Same Machine Setup
+
 1. Launch **F1 2025**
 2. Go to **Settings** → **Telemetry Settings**
 3. Configure as follows:
    - **UDP Telemetry:** **ON**
    - **UDP Broadcast Mode:** **ON** (if available)
-   - **UDP IP Address:** `127.0.0.1` (for same machine) or your receiver's IP
+   - **UDP IP Address:** `127.0.0.1`
    - **UDP Port:** **20777**
    - **UDP Send Rate:** **30 Hz**
    - **UDP Format:** **2025**
+
+#### Cross-Machine Setup (Different Computers)
+
+If F1 2025 is on a different machine than the receiver:
+
+1. **Find receiver's IP address:**
+   ```bash
+   # On Mac/Linux receiver
+   ifconfig | grep "inet " | grep -v 127.0.0.1
+   # Look for IP like 192.168.1.116
+
+   # On Windows receiver
+   ipconfig
+   # Look for IPv4 Address under your active network adapter
+   ```
+
+2. **Configure F1 2025 on Windows:**
+   - **UDP Telemetry:** **ON**
+   - **UDP Broadcast Mode:** **OFF**
+   - **UDP IP Address:** `192.168.1.116` (your receiver's IP)
+   - **UDP Port:** **20777**
+   - **UDP Send Rate:** **30 Hz**
+   - **UDP Format:** **2025**
+
+3. **Verify network connectivity from Windows:**
+   ```cmd
+   ping 192.168.1.116
+   ```
+   You should see replies. If not, check firewall settings.
+
+4. **Allow firewall on receiver machine** (if needed):
+   ```bash
+   # Mac: Allow Java to receive UDP
+   sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /usr/bin/java
+   ```
 
 ### Testing Steps
 
