@@ -214,7 +214,7 @@ When everything is working, you should see these packet types:
 | **Car Status** | ~2 Hz | Fuel, ERS, DRS status |
 | **Car Damage** | ~2 Hz | Tyre wear, component damage |
 
-The receiver currently decodes: **Motion**, **Lap Data**, **Telemetry**, and **Damage** packets.
+The receiver currently decodes: **Motion**, **Session**, **Lap Data**, **Telemetry**, and **Damage** packets.
 
 ---
 
@@ -225,12 +225,15 @@ The system outputs newline-delimited JSON (JSONL) at 30 Hz. Each line contains:
 - **timestamp**: Unix timestamp in milliseconds
 - **sessionTime**: Game session time in seconds
 - **frameId**: Game frame identifier
+- **meta**: Session metadata
+  - track_id: Track identifier (null if not yet received)
 - **player**: Player car telemetry
   - position, lapNumber, lapDistance
   - speed, gear, throttle, brake, steering
   - tyreWear (all four tyres)
 - **nearbyCars**: Array of nearby cars (up to 6 within 1.5s gap)
   - carIndex, position, gap (in seconds)
+  - world_pos_m: 3D world position (x, y, z in meters)
 
 You can redirect the JSON output to a file:
 ```bash
