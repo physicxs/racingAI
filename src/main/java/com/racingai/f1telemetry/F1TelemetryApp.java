@@ -4,6 +4,8 @@ import com.racingai.f1telemetry.decoder.PacketDecoder;
 import com.racingai.f1telemetry.decoder.PacketListener;
 import com.racingai.f1telemetry.decoder.UDPReceiver;
 import com.racingai.f1telemetry.packets.*;
+import com.racingai.f1telemetry.state.CarState;
+import com.racingai.f1telemetry.state.StateManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,6 +37,9 @@ public class F1TelemetryApp {
         UDPReceiver receiver = new UDPReceiver(DEFAULT_UDP_PORT);
         PacketDecoder decoder = new PacketDecoder();
 
+        // Phase 5: State management
+        StateManager stateManager = new StateManager();
+
         // Packet statistics
         AtomicLong packetCount = new AtomicLong(0);
         AtomicLong motionPackets = new AtomicLong(0);
@@ -52,6 +57,9 @@ public class F1TelemetryApp {
                 Object packet = decoder.decodePacket(data, length);
 
                 if (packet != null) {
+                    // Update state from packet
+                    stateManager.processPacket(packet);
+
                     // Track packet types
                     if (packet instanceof PacketMotionData) {
                         motionPackets.incrementAndGet();
@@ -93,6 +101,17 @@ public class F1TelemetryApp {
                         logger.info("Packets: {} total (Motion: {}, Lap: {}, Telemetry: {}, Damage: {})",
                             count, motionPackets.get(), lapDataPackets.get(),
                             telemetryPackets.get(), damagePackets.get());
+
+                        // Show player car state from state manager
+                        CarState playerCar = stateManager.getSessionState().getPlayerCar();
+                        if (playerCar != null) {
+                            logger.info(String.format("Player State - Position: %d, Lap: %d, Speed: %d km/h, Gear: %d, Distance: %.1fm",
+                                playerCar.getCarPosition(),
+                                playerCar.getCurrentLapNum(),
+                                playerCar.getSpeed(),
+                                playerCar.getGear(),
+                                playerCar.getLapDistance()));
+                        }
                     }
                 }
             }

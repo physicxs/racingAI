@@ -1,12 +1,13 @@
 /**
- * Live telemetry state management.
+ * State management for live telemetry data.
  *
- * Maintains merged state from multiple packet sources:
- * - Player car state (inputs, position, telemetry)
- * - Per-car state for all 22 cars
- * - Session and track metadata
- * - Latest frame and session timestamps
+ * This package maintains a unified state model that merges data from
+ * multiple packet types into a coherent representation of the current
+ * racing session.
  *
- * Handles packet arrival at different rates and merges into unified state.
+ * Key classes:
+ * - CarState: Represents the merged state of a single car
+ * - SessionState: Holds all cars and session metadata
+ * - StateManager: Processes packets and updates the state
  */
 package com.racingai.f1telemetry.state;
