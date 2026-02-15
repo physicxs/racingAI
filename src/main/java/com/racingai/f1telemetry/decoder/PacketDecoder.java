@@ -214,26 +214,9 @@ public class PacketDecoder {
             lapData.setNumUnservedDriveThroughPens(reader.readUInt8());
             lapData.setNumUnservedStopGoPens(reader.readUInt8());
 
-            // Known spec issue: gridPosition and driverStatus may be swapped
-            short field1 = reader.readUInt8();
-            short field2 = reader.readUInt8();
-
-            // Detect swap via range validation
-            // gridPosition: typically 1-22
-            // driverStatus: 0-4
-            if (field1 <= 4 && field2 >= 1 && field2 <= 22) {
-                // Likely swapped
-                lapData.setDriverStatus(field1);
-                lapData.setGridPosition(field2);
-                if (!fieldSwapWarningIssued) {
-                    logger.warn("LapData field swap detected - applying workaround");
-                    fieldSwapWarningIssued = true;
-                }
-            } else {
-                // Normal order
-                lapData.setGridPosition(field1);
-                lapData.setDriverStatus(field2);
-            }
+            // gridPosition and driverStatus - per F1 2025 spec
+            lapData.setGridPosition(reader.readUInt8());
+            lapData.setDriverStatus(reader.readUInt8());
 
             lapData.setResultStatus(reader.readUInt8());
             lapData.setPitLaneTimerActive(reader.readUInt8());

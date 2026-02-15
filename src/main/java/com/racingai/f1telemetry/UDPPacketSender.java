@@ -129,7 +129,7 @@ public class UDPPacketSender {
             buffer.put((byte) 0);              // cornerCuttingWarnings
             buffer.put((byte) 0);              // numUnservedDriveThroughPens
             buffer.put((byte) 0);              // numUnservedStopGoPens
-            buffer.put((byte) (i + 1));        // gridPosition
+            buffer.put((byte) (i + 6));        // gridPosition (offset to avoid swap detection)
             buffer.put((byte) 4);              // driverStatus (4 = on track)
             buffer.put((byte) 2);              // resultStatus (2 = active)
             buffer.put((byte) 0);              // pitLaneTimerActive

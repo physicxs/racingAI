@@ -159,9 +159,10 @@ public class CarState {
 
     /**
      * Check if this car is actively racing (on track).
-     * Driver status 4 = on track
+     * Driver status: 1=flying lap, 2=in lap, 3=out lap, 4=on track
+     * Excludes 0=in garage
      */
     public boolean isActive() {
-        return driverStatus == 4;
+        return driverStatus >= 1 && driverStatus <= 4;
     }
 }
