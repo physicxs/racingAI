@@ -62,6 +62,7 @@ public class F1TelemetryApp {
         AtomicLong lapDataPackets = new AtomicLong(0);
         AtomicLong telemetryPackets = new AtomicLong(0);
         AtomicLong damagePackets = new AtomicLong(0);
+        AtomicLong sessionPackets = new AtomicLong(0);
 
         // Add packet listener with decoder
         receiver.addListener(new PacketListener() {
@@ -88,12 +89,15 @@ public class F1TelemetryApp {
                         telemetryPackets.incrementAndGet();
                     } else if (packet instanceof PacketCarDamageData) {
                         damagePackets.incrementAndGet();
+                    } else if (packet instanceof PacketSessionData) {
+                        sessionPackets.incrementAndGet();
+                        logger.info("Session packet received (total: {})", sessionPackets.get());
                     }
 
                     // Log summary every 1000 packets
                     if (count % 1000 == 0) {
-                        logger.info("Packets: {} total (Motion: {}, Lap: {}, Telemetry: {}, Damage: {})",
-                            count, motionPackets.get(), lapDataPackets.get(),
+                        logger.info("Packets: {} total (Motion: {}, Session: {}, Lap: {}, Telemetry: {}, Damage: {})",
+                            count, motionPackets.get(), sessionPackets.get(), lapDataPackets.get(),
                             telemetryPackets.get(), damagePackets.get());
                     }
                 }
@@ -133,6 +137,7 @@ public class F1TelemetryApp {
                 logger.info("=== Packet Statistics ===");
                 logger.info("Total packets: {}", packetCount.get());
                 logger.info("Motion packets: {}", motionPackets.get());
+                logger.info("Session packets: {}", sessionPackets.get());
                 logger.info("Lap data packets: {}", lapDataPackets.get());
                 logger.info("Telemetry packets: {}", telemetryPackets.get());
                 logger.info("Damage packets: {}", damagePackets.get());

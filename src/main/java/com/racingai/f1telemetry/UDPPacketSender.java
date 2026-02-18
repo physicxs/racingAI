@@ -41,6 +41,11 @@ public class UDPPacketSender {
                 sendTelemetryPacket(socket, address, packetsSent);
             }
 
+            // Send session packet once per second (~30 frames)
+            if (packetsSent % 30 == 0) {
+                sendSessionPacket(socket, address, packetsSent);
+            }
+
             packetsSent++;
 
             if (packetsSent % 100 == 0) {
@@ -193,6 +198,40 @@ public class UDPPacketSender {
         buffer.put((byte) 255);  // mfdPanelIndex
         buffer.put((byte) 255);  // mfdPanelIndexSecondaryPlayer
         buffer.put((byte) 0);    // suggestedGear
+
+        sendPacket(socket, address, buffer.array());
+    }
+
+    private static void sendSessionPacket(DatagramSocket socket, InetAddress address, int frameId)
+            throws Exception {
+        ByteBuffer buffer = ByteBuffer.allocate(632);  // Session packet size
+        buffer.order(ByteOrder.LITTLE_ENDIAN);
+
+        // Header
+        writeHeader(buffer, (byte) 1, frameId); // PacketId 1 = Session
+
+        // Session data
+        buffer.put((byte) 0);              // weather (0 = clear)
+        buffer.put((byte) 25);             // trackTemperature (25°C)
+        buffer.put((byte) 22);             // airTemperature (22°C)
+        buffer.put((byte) 5);              // totalLaps
+        buffer.putShort((short) 5303);     // trackLength (5303m = Melbourne)
+        buffer.put((byte) 12);             // sessionType (12 = Time Trial)
+        buffer.put((byte) 0);              // trackId (0 = Melbourne/Australia)
+        buffer.put((byte) 0);              // formula (0 = F1 Modern)
+        buffer.putShort((short) 3600);     // sessionTimeLeft (seconds)
+        buffer.putShort((short) 3600);     // sessionDuration (seconds)
+        buffer.put((byte) 80);             // pitSpeedLimit (80 km/h)
+        buffer.put((byte) 0);              // gamePaused
+        buffer.put((byte) 0);              // isSpectating
+        buffer.put((byte) 255);            // spectatorCarIndex
+        buffer.put((byte) 1);              // sliProNativeSupport
+        buffer.put((byte) 0);              // safetyCarStatus
+
+        // Fill rest with zeros (simplified - skip marshal zones, weather forecast, etc.)
+        while (buffer.position() < buffer.capacity()) {
+            buffer.put((byte) 0);
+        }
 
         sendPacket(socket, address, buffer.array());
     }

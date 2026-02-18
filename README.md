@@ -2,7 +2,26 @@
 
 A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry data.
 
-**Status:** ✅ Complete | All 9 development phases finished | 19 unit tests passing
+**Status:** ✅ Complete | All 10 development phases finished | 19 unit tests passing
+
+## Quick Start
+
+**🎮 Live Monitor** - Real-time dashboard:
+```bash
+./monitor.sh
+```
+
+**💾 Record Session** - Save telemetry to file:
+```bash
+./record.sh
+```
+
+**📊 Test Inputs** - Verify controls:
+```bash
+./test_inputs.sh
+```
+
+See [QUICK_START.md](QUICK_START.md) for detailed setup and usage.
 
 ## Overview
 
@@ -109,6 +128,7 @@ See [TESTING.md](TESTING.md) for complete testing instructions including:
 - [x] **Phase 7:** JSON output stream
 - [x] **Phase 8:** Integration and main loop
 - [x] **Phase 9:** Testing and validation
+- [x] **Phase 10:** Live Dashboard & Save to File
 
 ## Output Format
 

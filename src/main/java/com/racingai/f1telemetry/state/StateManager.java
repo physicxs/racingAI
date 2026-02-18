@@ -1,6 +1,7 @@
 package com.racingai.f1telemetry.state;
 
 import com.racingai.f1telemetry.packets.*;
+import com.racingai.f1telemetry.utils.TrackIdMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -173,7 +174,12 @@ public class StateManager {
         );
 
         // Update track ID
-        sessionState.updateTrackId(packet.getTrackId());
+        byte trackId = packet.getTrackId();
+        sessionState.updateTrackId(trackId);
+
+        // Log track info
+        String trackName = TrackIdMapper.getTrackName(trackId);
+        logger.info("Session packet received - Track: {} (ID: {})", trackName, trackId);
     }
 
     /**
