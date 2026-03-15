@@ -141,9 +141,12 @@ class TrackMapApp:
     TRACK_COLOR = '#4a4a6a'
     CAR_COLOR = '#ff3333'
     CAR_RADIUS = 6
+    OTHER_CAR_COLOR = '#3399ff'
+    OTHER_CAR_RADIUS = 4
     START_COLOR = '#ffffff'
     HUD_COLOR = '#cccccc'
     UPDATE_MS = 100  # 10 Hz
+    MAX_OTHER_CARS = 21
 
     def __init__(self, track_map):
         self.track_map = track_map
@@ -158,6 +161,11 @@ class TrackMapApp:
         self.root.title('F1 2025 Track Map')
         self.root.configure(bg=self.BG_COLOR)
         self.root.resizable(True, True)
+
+        # Bring window to front on macOS
+        self.root.lift()
+        self.root.attributes('-topmost', True)
+        self.root.after(100, lambda: self.root.attributes('-topmost', False))
 
         self.canvas = tk.Canvas(
             self.root,
@@ -174,7 +182,22 @@ class TrackMapApp:
         # Draw track
         self._draw_track()
 
-        # Create car marker (initially hidden)
+        # Create other car markers (drawn first so player is on top)
+        self.other_car_markers = []
+        self.other_car_labels = []
+        for _ in range(self.MAX_OTHER_CARS):
+            marker = self.canvas.create_oval(
+                -20, -20, -20, -20,
+                fill=self.OTHER_CAR_COLOR, outline='#66bbff', width=1
+            )
+            label = self.canvas.create_text(
+                -20, -20, text='', fill='#99ccff',
+                font=('Courier', 8), anchor='s'
+            )
+            self.other_car_markers.append(marker)
+            self.other_car_labels.append(label)
+
+        # Create player car marker (on top of others)
         self.car_marker = self.canvas.create_oval(
             0, 0, 0, 0, fill=self.CAR_COLOR, outline='#ff6666', width=2
         )
@@ -248,6 +271,19 @@ class TrackMapApp:
         # Redraw everything
         self.canvas.delete('all')
         self._draw_track()
+        self.other_car_markers = []
+        self.other_car_labels = []
+        for _ in range(self.MAX_OTHER_CARS):
+            marker = self.canvas.create_oval(
+                -20, -20, -20, -20,
+                fill=self.OTHER_CAR_COLOR, outline='#66bbff', width=1
+            )
+            label = self.canvas.create_text(
+                -20, -20, text='', fill='#99ccff',
+                font=('Courier', 8), anchor='s'
+            )
+            self.other_car_markers.append(marker)
+            self.other_car_labels.append(label)
         self.car_marker = self.canvas.create_oval(
             0, 0, 0, 0, fill=self.CAR_COLOR, outline='#ff6666', width=2
         )
@@ -276,27 +312,62 @@ class TrackMapApp:
             throttle = player.get('throttle', 0.0)
             brake = player.get('brake', 0.0)
 
-            # Look up car position on track map
+            # Update other cars from allCars array
+            all_cars = data.get('allCars', [])
+            for i in range(self.MAX_OTHER_CARS):
+                if i < len(all_cars):
+                    car = all_cars[i]
+                    car_dist = car.get('lapDistance', 0.0)
+                    car_pos = car.get('position', 0)
+                    cu, cv = lookup_position(self.track_map, car_dist)
+                    ccx, ccy = self.transform.to_canvas(cu, cv)
+                    r = self.OTHER_CAR_RADIUS
+                    self.canvas.coords(
+                        self.other_car_markers[i],
+                        ccx - r, ccy - r, ccx + r, ccy + r
+                    )
+                    self.canvas.coords(
+                        self.other_car_labels[i],
+                        ccx, ccy - r - 2
+                    )
+                    self.canvas.itemconfig(
+                        self.other_car_labels[i], text=f'P{car_pos}'
+                    )
+                else:
+                    # Hide unused markers
+                    self.canvas.coords(
+                        self.other_car_markers[i], -20, -20, -20, -20
+                    )
+                    self.canvas.coords(
+                        self.other_car_labels[i], -20, -20
+                    )
+                    self.canvas.itemconfig(self.other_car_labels[i], text='')
+
+            # Look up player position on track map
             u, v = lookup_position(self.track_map, lap_dist)
             cx, cy = self.transform.to_canvas(u, v)
 
-            # Move car marker
+            # Move player car marker (always on top)
             r = self.CAR_RADIUS
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
             self.canvas.tag_raise(self.car_marker)
 
             # Update HUD
-            hud = f"P{position}  Lap {lap_num}  {speed} km/h  G{gear}"
+            n_cars = len(all_cars) + 1
+            hud = f"P{position}/{n_cars}  Lap {lap_num}  {speed} km/h  G{gear}"
             hud += f"  T:{throttle:.0%}  B:{brake:.0%}"
             self.canvas.itemconfig(self.hud_text, text=hud)
 
         # Schedule next update
         self.root.after(self.UPDATE_MS, self._update)
 
-    def run(self):
+    def run(self, preview_only=False):
         """Start reader thread and tkinter mainloop."""
-        self.reader.start()
-        self.root.after(self.UPDATE_MS, self._update)
+        if not preview_only:
+            self.reader.start()
+            self.root.after(self.UPDATE_MS, self._update)
+        else:
+            self.canvas.itemconfig(self.hud_text, text='Preview mode (no live data)')
 
         try:
             self.root.mainloop()
@@ -337,18 +408,21 @@ def get_track_name_safe(track_id):
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 track_map_live.py <track_map.json>")
+    preview = '--preview' in sys.argv
+    args = [a for a in sys.argv[1:] if a != '--preview']
+
+    if not args:
+        print("Usage: python3 track_map_live.py <track_map.json> [--preview]")
         print()
         print("Show a real-time track map with live car position.")
-        print("Pipe telemetry JSONL to stdin.")
+        print("  --preview  Show track map only (no live telemetry needed)")
         print()
-        print("Example:")
-        print("  mvn -q exec:java -Dexec.mainClass=\"com.racingai.f1telemetry.F1TelemetryApp\" 2>&1 | \\")
-        print("    python3 track_map_live.py track_0_map.json")
+        print("Examples:")
+        print("  python3 track_map_live.py track_0_map.json --preview")
+        print("  mvn -q exec:java ... 2>&1 | python3 track_map_live.py track_0_map.json")
         sys.exit(1)
 
-    map_path = sys.argv[1]
+    map_path = args[0]
 
     try:
         track_map = load_track_map(map_path)
@@ -361,10 +435,14 @@ def main():
 
     print(f"Loaded track map: {track_map['num_points']} points, "
           f"{track_map['track_length']}m")
-    print("Starting GUI... (close window or Ctrl+C to stop)")
+
+    if preview:
+        print("Opening preview... (close window to exit)")
+    else:
+        print("Starting GUI... (close window or Ctrl+C to stop)")
 
     app = TrackMapApp(track_map)
-    app.run()
+    app.run(preview_only=preview)
 
 
 if __name__ == '__main__':

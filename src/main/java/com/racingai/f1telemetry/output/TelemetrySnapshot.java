@@ -28,6 +28,9 @@ public class TelemetrySnapshot {
     @JsonProperty("nearbyCars")
     private List<NearbyCarData> nearbyCars;
 
+    @JsonProperty("allCars")
+    private List<RaceCarData> allCars;
+
     public TelemetrySnapshot() {
     }
 
@@ -87,5 +90,13 @@ public class TelemetrySnapshot {
 
     public void setNearbyCars(List<NearbyCarData> nearbyCars) {
         this.nearbyCars = nearbyCars;
+    }
+
+    public List<RaceCarData> getAllCars() {
+        return allCars;
+    }
+
+    public void setAllCars(List<RaceCarData> allCars) {
+        this.allCars = allCars;
     }
 }

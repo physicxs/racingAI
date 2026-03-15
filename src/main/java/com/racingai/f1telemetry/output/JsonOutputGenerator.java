@@ -65,6 +65,10 @@ public class JsonOutputGenerator {
             List<NearbyCarData> nearbyCarDataList = buildNearbyCarData(playerCar, nearbyCars);
             snapshot.setNearbyCars(nearbyCarDataList);
 
+            // All cars (for track map)
+            List<RaceCarData> allCarsList = buildAllCarsData(sessionState, playerCar);
+            snapshot.setAllCars(allCarsList);
+
             // Serialize to JSON
             return objectMapper.writeValueAsString(snapshot);
 
@@ -141,5 +145,31 @@ public class JsonOutputGenerator {
         }
 
         return nearbyCarDataList;
+    }
+
+    /**
+     * Build data for all active cars (for track map placement).
+     */
+    private List<RaceCarData> buildAllCarsData(SessionState sessionState, CarState playerCar) {
+        List<RaceCarData> allCars = new ArrayList<>();
+        CarState[] cars = sessionState.getAllCars();
+
+        for (CarState car : cars) {
+            if (car == null || car.getCarPosition() <= 0) {
+                continue;
+            }
+            // Skip the player car (already shown separately)
+            if (car.getCarIndex() == playerCar.getCarIndex()) {
+                continue;
+            }
+            allCars.add(new RaceCarData(
+                car.getCarIndex(),
+                car.getCarPosition(),
+                car.getLapDistance(),
+                car.getCurrentLapNum()
+            ));
+        }
+
+        return allCars;
     }
 }
