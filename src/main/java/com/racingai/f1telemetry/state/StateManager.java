@@ -173,9 +173,10 @@ public class StateManager {
             header.getPlayerCarIndex()
         );
 
-        // Update track ID
+        // Update track ID and length
         byte trackId = packet.getTrackId();
         sessionState.updateTrackId(trackId);
+        sessionState.updateTrackLength(packet.getTrackLength());
 
         // Log track info
         String trackName = TrackIdMapper.getTrackName(trackId);

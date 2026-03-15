@@ -34,6 +34,9 @@ public class PlayerData {
     @JsonProperty("tyreWear")
     private TyreWearData tyreWear;
 
+    @JsonProperty("world_pos_m")
+    private WorldPosition worldPosM;
+
     public PlayerData() {
     }
 
@@ -121,5 +124,13 @@ public class PlayerData {
 
     public void setTyreWear(TyreWearData tyreWear) {
         this.tyreWear = tyreWear;
+    }
+
+    public WorldPosition getWorldPosM() {
+        return worldPosM;
+    }
+
+    public void setWorldPosM(WorldPosition worldPosM) {
+        this.worldPosM = worldPosM;
     }
 }

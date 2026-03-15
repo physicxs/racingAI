@@ -79,7 +79,8 @@ public class JsonOutputGenerator {
      */
     private MetaData buildMetaData(SessionState sessionState) {
         Byte trackId = sessionState.getTrackId();
-        return new MetaData(trackId != null ? trackId.intValue() : null);
+        Integer trackLength = sessionState.getTrackLength();
+        return new MetaData(trackId != null ? trackId.intValue() : null, trackLength);
     }
 
     /**
@@ -105,6 +106,14 @@ public class JsonOutputGenerator {
             tyreWear[3]  // FR
         );
         player.setTyreWear(tyreWearData);
+
+        // World position
+        WorldPosition worldPos = new WorldPosition(
+            playerCar.getWorldPositionX(),
+            playerCar.getWorldPositionY(),
+            playerCar.getWorldPositionZ()
+        );
+        player.setWorldPosM(worldPos);
 
         return player;
     }

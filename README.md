@@ -2,7 +2,7 @@
 
 A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry data.
 
-**Status:** ✅ Complete | All 10 development phases finished | 19 unit tests passing
+**Status:** ✅ Complete | All 11 development phases finished | 21 unit tests passing
 
 ## Quick Start
 
@@ -16,12 +16,17 @@ A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry 
 ./record.sh
 ```
 
+**🗺️ Build Track Map** - Generate 2D track map from recorded laps:
+```bash
+./build_map.sh <telemetry.jsonl>
+```
+
 **📊 Test Inputs** - Verify controls:
 ```bash
 ./test_inputs.sh
 ```
 
-See [QUICK_START.md](QUICK_START.md) for detailed setup and usage.
+See [QUICK_START.md](QUICK_START.md) for detailed setup and usage. See [TRACK_MAP_GUIDE.md](TRACK_MAP_GUIDE.md) for track map generation.
 
 ## Overview
 
@@ -129,6 +134,7 @@ See [TESTING.md](TESTING.md) for complete testing instructions including:
 - [x] **Phase 8:** Integration and main loop
 - [x] **Phase 9:** Testing and validation
 - [x] **Phase 10:** Live Dashboard & Save to File
+- [x] **Phase 11:** Track Map Generation
 
 ## Output Format
 
@@ -140,7 +146,8 @@ The application outputs newline-delimited JSON (JSONL) at 30 Hz. Each line conta
   "sessionTime": 421.569,
   "frameId": 17647,
   "meta": {
-    "track_id": 5
+    "track_id": 5,
+    "track_length": 5303
   },
   "player": {
     "position": 9,
@@ -156,6 +163,11 @@ The application outputs newline-delimited JSON (JSONL) at 30 Hz. Each line conta
       "rearRight": 9.815713,
       "frontLeft": 13.483042,
       "frontRight": 5.848298
+    },
+    "world_pos_m": {
+      "x": 100.5,
+      "y": 5.2,
+      "z": 200.3
     }
   },
   "nearbyCars": [
@@ -178,10 +190,12 @@ The application outputs newline-delimited JSON (JSONL) at 30 Hz. Each line conta
 - `sessionTime`: Game session time (seconds)
 - `frameId`: Game frame identifier
 - `meta.track_id`: Track identifier (-1 if unknown)
+- `meta.track_length`: Track length in meters
 - `player`: Player car telemetry
   - Inputs: steering, throttle, brake
   - State: position, lapNumber, lapDistance, speed, gear
   - Tyre wear: all four tyres (percentage)
+  - `world_pos_m`: 3D world position (x, y, z in meters)
 - `nearbyCars`: Up to 6 cars within 1.5s gap
   - `carIndex`, `position`, `gap` (seconds)
   - `world_pos_m`: 3D position (x, y, z in meters)

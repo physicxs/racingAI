@@ -31,8 +31,13 @@ public class JsonOutputGeneratorTest {
     public void testGenerateSnapshotWithActivePlayer() throws Exception {
         // Set up session state with player car
         sessionState.updateSessionMetadata(123456789L, 100.5f, 5000L, (short) 0);
+        sessionState.updateTrackId((byte) 0);
+        sessionState.updateTrackLength(5303);
 
         CarState playerCar = sessionState.getCar(0);
+
+        // Update player car with motion data
+        playerCar.updateMotion(100.5f, 5.2f, 200.3f, 50.0f, 0.0f, 70.0f, 0.5f, 1.2f, -0.3f);
 
         // Update player car with lap data (make active)
         playerCar.updateLapData(90000L, 30000L, 1500.0f, 5000.0f,
@@ -86,6 +91,19 @@ public class JsonOutputGeneratorTest {
         assertEquals(11.2f, tyreWear.get("rearRight").floatValue(), 0.01f);
         assertEquals(8.3f, tyreWear.get("frontLeft").floatValue(), 0.01f);
         assertEquals(9.1f, tyreWear.get("frontRight").floatValue(), 0.01f);
+
+        // Verify player world position
+        JsonNode worldPos = player.get("world_pos_m");
+        assertNotNull(worldPos, "Should have world_pos_m");
+        assertEquals(100.5f, worldPos.get("x").floatValue(), 0.01f);
+        assertEquals(5.2f, worldPos.get("y").floatValue(), 0.01f);
+        assertEquals(200.3f, worldPos.get("z").floatValue(), 0.01f);
+
+        // Verify meta data
+        JsonNode meta = root.get("meta");
+        assertNotNull(meta, "Should have meta");
+        assertEquals(0, meta.get("track_id").intValue());
+        assertEquals(5303, meta.get("track_length").intValue());
 
         // Verify nearby cars
         JsonNode nearbyCars = root.get("nearbyCars");

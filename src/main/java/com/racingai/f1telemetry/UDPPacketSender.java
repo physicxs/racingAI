@@ -11,11 +11,24 @@ import java.nio.ByteOrder;
  *
  * Sends mock F1 2025 telemetry packets to localhost:20777.
  * Useful for testing without the actual F1 game.
+ *
+ * Generates a parametric oval track shape so the track map builder
+ * can be tested end-to-end with simulated data.
  */
 public class UDPPacketSender {
 
     private static final String TARGET_HOST = "localhost";
     private static final int TARGET_PORT = 20777;
+
+    // Oval track parameters (approximate Melbourne dimensions)
+    private static final float TRACK_LENGTH = 5303.0f;
+    private static final float RADIUS_X = 400.0f;   // semi-major axis
+    private static final float RADIUS_Z = 250.0f;   // semi-minor axis
+    private static final float CENTER_X = 0.0f;
+    private static final float CENTER_Z = 0.0f;
+    private static final float TRACK_HEIGHT = 5.0f;  // constant Y (vertical)
+    private static final float SPEED_MPS = 80.0f;    // ~288 km/h
+    private static final float DT = 0.033f;          // 33ms per frame
 
     public static void main(String[] args) throws Exception {
         System.out.println("F1 2025 UDP Packet Sender (Test Tool)");
@@ -56,6 +69,24 @@ public class UDPPacketSender {
         }
     }
 
+    /**
+     * Compute lap distance for a given car at a given frame.
+     */
+    private static float computeLapDistance(int frameId, int carIndex) {
+        float offset = carIndex * 200.0f; // spread cars around track
+        return ((frameId * SPEED_MPS * DT) + offset) % TRACK_LENGTH;
+    }
+
+    /**
+     * Compute world position on the oval track for a given lap distance.
+     */
+    private static float[] computeWorldPosition(float lapDistance) {
+        float angle = (lapDistance / TRACK_LENGTH) * 2.0f * (float) Math.PI;
+        float x = CENTER_X + RADIUS_X * (float) Math.cos(angle);
+        float z = CENTER_Z + RADIUS_Z * (float) Math.sin(angle);
+        return new float[]{x, TRACK_HEIGHT, z};
+    }
+
     private static void sendMotionPacket(DatagramSocket socket, InetAddress address, int frameId)
             throws Exception {
         ByteBuffer buffer = ByteBuffer.allocate(1349);
@@ -66,10 +97,13 @@ public class UDPPacketSender {
 
         // Motion data for 22 cars (60 bytes each)
         for (int i = 0; i < 22; i++) {
+            float lapDist = computeLapDistance(frameId, i);
+            float[] pos = computeWorldPosition(lapDist);
+
             // Position (3 floats = 12 bytes)
-            buffer.putFloat(100.0f + i * 10);  // worldPositionX
-            buffer.putFloat(0.0f);              // worldPositionY
-            buffer.putFloat(200.0f + i * 10);  // worldPositionZ
+            buffer.putFloat(pos[0]);  // worldPositionX
+            buffer.putFloat(pos[1]);  // worldPositionY
+            buffer.putFloat(pos[2]);  // worldPositionZ
 
             // Velocity (3 floats = 12 bytes)
             buffer.putFloat(50.0f);             // worldVelocityX
@@ -110,6 +144,9 @@ public class UDPPacketSender {
 
         // Lap data for 22 cars
         for (int i = 0; i < 22; i++) {
+            float lapDist = computeLapDistance(frameId, i);
+            int lapNum = (int) ((frameId * SPEED_MPS * DT + i * 200.0f) / TRACK_LENGTH) + 1;
+
             buffer.putInt(90000 + i * 1000);  // lastLapTimeInMS
             buffer.putInt(30000);              // currentLapTimeInMS
             buffer.putShort((short) 15000);    // sector1TimeMSPart
@@ -120,11 +157,11 @@ public class UDPPacketSender {
             buffer.put((byte) 0);              // deltaToCarInFrontMinutesPart
             buffer.putShort((short) (i * 500)); // deltaToRaceLeaderMSPart
             buffer.put((byte) 0);              // deltaToRaceLeaderMinutesPart
-            buffer.putFloat(1500.0f + i * 100); // lapDistance
+            buffer.putFloat(lapDist);          // lapDistance
             buffer.putFloat(5000.0f);          // totalDistance
             buffer.putFloat(0.0f);             // safetyCarDelta
             buffer.put((byte) (i + 1));        // carPosition
-            buffer.put((byte) 5);              // currentLapNum
+            buffer.put((byte) lapNum);         // currentLapNum
             buffer.put((byte) 0);              // pitStatus
             buffer.put((byte) 0);              // numPitStops
             buffer.put((byte) 0);              // sector
