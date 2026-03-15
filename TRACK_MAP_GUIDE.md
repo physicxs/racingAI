@@ -93,6 +93,28 @@ To look up any car's map position at runtime given its `lapDistance`:
 2. `i = floor(s)`, `t = s - i`
 3. `(u, v) = points[i] + t * (points[i+1] - points[i])`
 
+## Live Track Map GUI
+
+Once you have a track map, you can view your car's position in real time:
+
+```bash
+./track_map_gui.sh <track_map.json>
+```
+
+This opens a tkinter window showing:
+
+- Track outline drawn from the map data
+- Red dot showing your car's live position
+- HUD overlay: position, lap, speed, gear, throttle, brake
+- Start/finish line marker
+- Resizable window
+
+Test with simulated data (no game needed):
+
+```bash
+./track_map_gui_test.sh
+```
+
 ## Tips for Best Results
 
 - **Time Trial mode** is ideal — no traffic, consistent racing line

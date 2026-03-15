@@ -21,6 +21,11 @@ A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry 
 ./build_map.sh <telemetry.jsonl>
 ```
 
+**📍 Live Track Map GUI** - Real-time car position on track:
+```bash
+./track_map_gui.sh <track_map.json>
+```
+
 **📊 Test Inputs** - Verify controls:
 ```bash
 ./test_inputs.sh
