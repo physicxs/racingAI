@@ -38,6 +38,8 @@ public class StateManager {
             processLapDataPacket((PacketLapData) packet);
         } else if (packet instanceof PacketCarTelemetryData) {
             processTelemetryPacket((PacketCarTelemetryData) packet);
+        } else if (packet instanceof PacketCarStatusData) {
+            processCarStatusPacket((PacketCarStatusData) packet);
         } else if (packet instanceof PacketCarDamageData) {
             processDamagePacket((PacketCarDamageData) packet);
         } else if (packet instanceof PacketSessionData) {
@@ -70,7 +72,10 @@ public class StateManager {
                     motion.getWorldVelocityZ(),
                     motion.getgForceLateral(),
                     motion.getgForceLongitudinal(),
-                    motion.getgForceVertical()
+                    motion.getgForceVertical(),
+                    motion.getYaw(),
+                    motion.getPitch(),
+                    motion.getRoll()
                 );
             }
         }
@@ -131,7 +136,11 @@ public class StateManager {
                     telemetry.getBrake(),
                     telemetry.getEngineRPM(),
                     telemetry.getEngineTemperature(),
-                    telemetry.getTyresPressure()
+                    telemetry.getTyresPressure(),
+                    telemetry.getDrs(),
+                    telemetry.getTyresSurfaceTemperature(),
+                    telemetry.getTyresInnerTemperature(),
+                    telemetry.getBrakesTemperature()
                 );
             }
         }
@@ -157,7 +166,11 @@ public class StateManager {
                     damage.getTyresWear(),
                     damage.getFrontLeftWingDamage(),
                     damage.getFrontRightWingDamage(),
-                    damage.getRearWingDamage()
+                    damage.getRearWingDamage(),
+                    damage.getFloorDamage(),
+                    damage.getDiffuserDamage(),
+                    damage.getSidepodDamage(),
+                    damage.getTyresDamage()
                 );
             }
         }
@@ -178,9 +191,50 @@ public class StateManager {
         sessionState.updateTrackId(trackId);
         sessionState.updateTrackLength(packet.getTrackLength());
 
+        // Update session info (safety car, weather, temps)
+        sessionState.updateSessionInfo(
+            packet.getSafetyCarStatus(),
+            packet.getWeather(),
+            packet.getTrackTemperature(),
+            packet.getAirTemperature(),
+            packet.getTotalLaps()
+        );
+
         // Log track info
         String trackName = TrackIdMapper.getTrackName(trackId);
         logger.info("Session packet received - Track: {} (ID: {})", trackName, trackId);
+    }
+
+    private void processCarStatusPacket(PacketCarStatusData packet) {
+        // Update session metadata
+        PacketHeader header = packet.getHeader();
+        sessionState.updateSessionMetadata(
+            header.getSessionUID(),
+            header.getSessionTime(),
+            header.getFrameIdentifier(),
+            header.getPlayerCarIndex()
+        );
+
+        // Update car status data for all cars
+        CarStatusData[] statusData = packet.getCarStatusData();
+        for (int i = 0; i < statusData.length; i++) {
+            CarStatusData status = statusData[i];
+            CarState car = sessionState.getCar(i);
+            if (car != null) {
+                car.updateCarStatus(
+                    status.getDrsAllowed(),
+                    status.getErsDeployMode(),
+                    status.getErsStoreEnergy(),
+                    status.getErsDeployedThisLap(),
+                    status.getErsHarvestedThisLapMGUK(),
+                    status.getErsHarvestedThisLapMGUH(),
+                    status.getActualTyreCompound(),
+                    status.getVisualTyreCompound(),
+                    status.getTyresAgeLaps(),
+                    status.getVehicleFiaFlags()
+                );
+            }
+        }
     }
 
     /**

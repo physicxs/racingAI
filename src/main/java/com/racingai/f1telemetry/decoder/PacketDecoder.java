@@ -109,6 +109,8 @@ public class PacketDecoder {
                 return decodeLapDataPacket(reader, header);
             case CAR_TELEMETRY:
                 return decodeCarTelemetryPacket(reader, header);
+            case CAR_STATUS:
+                return decodeCarStatusPacket(reader, header);
             case CAR_DAMAGE:
                 return decodeCarDamagePacket(reader, header);
             default:
@@ -175,7 +177,13 @@ public class PacketDecoder {
         packet.setSpectatorCarIndex(reader.readUInt8());
         packet.setSliProNativeSupport(reader.readUInt8());
 
-        // Skip remaining fields for simplified version
+        // Skip marshal zones: numMarshalZones (uint8) + 21 zones * (float + int8) = 1 + 105 = 106 bytes
+        int skipBytes = 1 + 21 * 5;
+        reader.position(reader.position() + skipBytes);
+
+        packet.setSafetyCarStatus(reader.readUInt8());
+        packet.setNetworkGame(reader.readUInt8());
+
         return packet;
     }
 
@@ -268,6 +276,48 @@ public class PacketDecoder {
         packet.setMfdPanelIndex(reader.readUInt8());
         packet.setMfdPanelIndexSecondaryPlayer(reader.readUInt8());
         packet.setSuggestedGear(reader.readInt8());
+
+        return packet;
+    }
+
+    /**
+     * Decodes car status packet (ID 7).
+     */
+    private PacketCarStatusData decodeCarStatusPacket(ByteBufferReader reader, PacketHeader header) {
+        PacketCarStatusData packet = new PacketCarStatusData();
+        packet.setHeader(header);
+
+        for (int i = 0; i < PacketConstants.MAX_CARS; i++) {
+            CarStatusData status = new CarStatusData();
+
+            status.setTractionControl(reader.readUInt8());
+            status.setAntiLockBrakes(reader.readUInt8());
+            status.setFuelMix(reader.readUInt8());
+            status.setFrontBrakeBias(reader.readUInt8());
+            status.setPitLimiterStatus(reader.readUInt8());
+            status.setFuelInTank(reader.readFloat());
+            status.setFuelCapacity(reader.readFloat());
+            status.setFuelRemainingLaps(reader.readFloat());
+            status.setMaxRPM(reader.readUInt16());
+            status.setIdleRPM(reader.readUInt16());
+            status.setMaxGears(reader.readUInt8());
+            status.setDrsAllowed(reader.readUInt8());
+            status.setDrsActivationDistance(reader.readUInt16());
+            status.setActualTyreCompound(reader.readUInt8());
+            status.setVisualTyreCompound(reader.readUInt8());
+            status.setTyresAgeLaps(reader.readUInt8());
+            status.setVehicleFiaFlags(reader.readInt8());
+            status.setEnginePowerICE(reader.readFloat());
+            status.setEnginePowerMGUK(reader.readFloat());
+            status.setErsStoreEnergy(reader.readFloat());
+            status.setErsDeployMode(reader.readUInt8());
+            status.setErsHarvestedThisLapMGUK(reader.readFloat());
+            status.setErsHarvestedThisLapMGUH(reader.readFloat());
+            status.setErsDeployedThisLap(reader.readFloat());
+            status.setNetworkPaused(reader.readUInt8());
+
+            packet.setCarStatusData(i, status);
+        }
 
         return packet;
     }

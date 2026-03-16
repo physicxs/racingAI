@@ -19,6 +19,11 @@ public class SessionState {
     private long frameIdentifier;
     private Byte trackId;  // Nullable - may not be available initially
     private Integer trackLength;  // Nullable - may not be available initially
+    private Short safetyCarStatus; // 0=no SC, 1=full, 2=virtual, 3=formation lap
+    private Short weather; // 0=clear..5=storm
+    private Byte trackTemperature; // Celsius
+    private Byte airTemperature; // Celsius
+    private Short totalLaps;
 
     public SessionState() {
         this.cars = new CarState[PacketConstants.MAX_CARS];
@@ -92,4 +97,19 @@ public class SessionState {
     }
 
     public Integer getTrackLength() { return trackLength; }
+
+    public synchronized void updateSessionInfo(short safetyCarStatus, short weather,
+                                               byte trackTemp, byte airTemp, short totalLaps) {
+        this.safetyCarStatus = safetyCarStatus;
+        this.weather = weather;
+        this.trackTemperature = trackTemp;
+        this.airTemperature = airTemp;
+        this.totalLaps = totalLaps;
+    }
+
+    public Short getSafetyCarStatus() { return safetyCarStatus; }
+    public Short getWeather() { return weather; }
+    public Byte getTrackTemperature() { return trackTemperature; }
+    public Byte getAirTemperature() { return airTemperature; }
+    public Short getTotalLaps() { return totalLaps; }
 }

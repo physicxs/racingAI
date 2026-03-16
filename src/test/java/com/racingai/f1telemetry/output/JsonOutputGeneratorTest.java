@@ -37,7 +37,7 @@ public class JsonOutputGeneratorTest {
         CarState playerCar = sessionState.getCar(0);
 
         // Update player car with motion data
-        playerCar.updateMotion(100.5f, 5.2f, 200.3f, 50.0f, 0.0f, 70.0f, 0.5f, 1.2f, -0.3f);
+        playerCar.updateMotion(100.5f, 5.2f, 200.3f, 50.0f, 0.0f, 70.0f, 0.5f, 1.2f, -0.3f, 0.1f, 0.02f, -0.01f);
 
         // Update player car with lap data (make active)
         playerCar.updateLapData(90000L, 30000L, 1500.0f, 5000.0f,
@@ -45,10 +45,13 @@ public class JsonOutputGeneratorTest {
 
         // Update player car with telemetry
         playerCar.updateTelemetry(287, (short) 7, 0.85f, -0.15f, 0.0f,
-                                 12000, 90, new float[]{23.5f, 23.6f, 23.4f, 23.5f});
+                                 12000, 90, new float[]{23.5f, 23.6f, 23.4f, 23.5f},
+                                 (short) 1, new short[]{95, 96, 97, 98}, new short[]{100, 101, 102, 103},
+                                 new int[]{400, 410, 420, 430});
 
         // Update player car with damage (tyre wear)
-        playerCar.updateDamage(new float[]{10.5f, 11.2f, 8.3f, 9.1f}, 0.0f, 0.0f, 0.0f);
+        playerCar.updateDamage(new float[]{10.5f, 11.2f, 8.3f, 9.1f}, 0.0f, 0.0f, 0.0f,
+                                (short) 0, (short) 0, (short) 0, new short[]{0, 0, 0, 0});
 
         // Add another car nearby
         CarState otherCar = sessionState.getCar(1);
@@ -145,8 +148,11 @@ public class JsonOutputGeneratorTest {
         playerCar.updateLapData(90000L, 30000L, 1500.0f, 5000.0f,
                                (short) 1, (short) 3, (short) 1, (short) 4, 0.0);
         playerCar.updateTelemetry(200, (short) 5, 0.5f, 0.0f, 0.0f,
-                                 10000, 80, new float[]{23.0f, 23.0f, 23.0f, 23.0f});
-        playerCar.updateDamage(new float[]{0.0f, 0.0f, 0.0f, 0.0f}, 0.0f, 0.0f, 0.0f);
+                                 10000, 80, new float[]{23.0f, 23.0f, 23.0f, 23.0f},
+                                 (short) 0, new short[]{90, 90, 90, 90}, new short[]{95, 95, 95, 95},
+                                 new int[]{350, 350, 350, 350});
+        playerCar.updateDamage(new float[]{0.0f, 0.0f, 0.0f, 0.0f}, 0.0f, 0.0f, 0.0f,
+                                (short) 0, (short) 0, (short) 0, new short[]{0, 0, 0, 0});
 
         // Generate JSON
         String json = generator.generateSnapshot(sessionState);

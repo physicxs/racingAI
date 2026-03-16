@@ -2,7 +2,7 @@
 
 A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry data.
 
-**Status:** ✅ Complete | All 11 development phases finished | 21 unit tests passing
+**Status:** ✅ Complete | All 12 development phases finished | 21 unit tests passing
 
 ## Quick Start
 
@@ -145,6 +145,7 @@ See [TESTING.md](TESTING.md) for complete testing instructions including:
 - [x] **Phase 9:** Testing and validation
 - [x] **Phase 10:** Live Dashboard & Save to File
 - [x] **Phase 11:** Track Map Generation
+- [x] **Phase 12:** Racecraft AI Telemetry (orientation, DRS/ERS, tyre data, damage, flags, stats panel)
 
 ## Output Format
 
@@ -157,7 +158,12 @@ The application outputs newline-delimited JSON (JSONL) at 30 Hz. Each line conta
   "frameId": 17647,
   "meta": {
     "track_id": 5,
-    "track_length": 5303
+    "track_length": 5303,
+    "safety_car": 0,
+    "weather": 0,
+    "track_temp": 35,
+    "air_temp": 22,
+    "total_laps": 58
   },
   "player": {
     "position": 9,
@@ -168,17 +174,20 @@ The application outputs newline-delimited JSON (JSONL) at 30 Hz. Each line conta
     "throttle": 1.0,
     "brake": 0.0,
     "steering": 0.000820861,
-    "tyreWear": {
-      "rearLeft": 13.52763,
-      "rearRight": 9.815713,
-      "frontLeft": 13.483042,
-      "frontRight": 5.848298
-    },
-    "world_pos_m": {
-      "x": 100.5,
-      "y": 5.2,
-      "z": 200.3
-    }
+    "tyreWear": { "rearLeft": 13.5, "rearRight": 9.8, "frontLeft": 13.5, "frontRight": 5.8 },
+    "world_pos_m": { "x": 100.5, "y": 5.2, "z": 200.3 },
+    "yaw": 0.1, "pitch": 0.02, "roll": -0.01,
+    "gForceLateral": 0.5, "gForceLongitudinal": 1.2,
+    "drs": 0, "drsAllowed": 1,
+    "ersDeployMode": 1, "ersStoreEnergy": 2000000.0,
+    "ersDeployedThisLap": 500000.0,
+    "tyreSurfaceTemp": [92, 93, 95, 97],
+    "tyreInnerTemp": [100, 101, 102, 103],
+    "tyreCompound": 18, "tyreCompoundVisual": 16, "tyresAgeLaps": 12,
+    "tyreDamage": [0, 0, 0, 0],
+    "brakeTemp": [400, 410, 420, 430],
+    "floorDamage": 0, "diffuserDamage": 0, "sidepodDamage": 0,
+    "vehicleFiaFlags": 0
   },
   "nearbyCars": [
     {
@@ -199,13 +208,26 @@ The application outputs newline-delimited JSON (JSONL) at 30 Hz. Each line conta
 - `timestamp`: Unix timestamp (milliseconds)
 - `sessionTime`: Game session time (seconds)
 - `frameId`: Game frame identifier
-- `meta.track_id`: Track identifier (-1 if unknown)
-- `meta.track_length`: Track length in meters
+- `meta`: Session metadata
+  - `track_id`, `track_length`: Track identifier and length (meters)
+  - `safety_car`: 0=none, 1=full SC, 2=VSC, 3=formation
+  - `weather`: 0=clear, 1=light cloud, 2=overcast, 3=light rain, 4=heavy rain, 5=storm
+  - `track_temp`, `air_temp`: Temperatures (°C)
+  - `total_laps`: Total race laps
 - `player`: Player car telemetry
-  - Inputs: steering, throttle, brake
-  - State: position, lapNumber, lapDistance, speed, gear
-  - Tyre wear: all four tyres (percentage)
+  - Inputs: `steering`, `throttle`, `brake`
+  - State: `position`, `lapNumber`, `lapDistance`, `speed`, `gear`
+  - Tyre wear: all four tyres (percentage) via `tyreWear` object
   - `world_pos_m`: 3D world position (x, y, z in meters)
+  - Orientation: `yaw`, `pitch`, `roll` (radians)
+  - G-forces: `gForceLateral`, `gForceLongitudinal`
+  - DRS: `drs` (0/1), `drsAllowed` (0/1)
+  - ERS: `ersDeployMode` (0-3), `ersStoreEnergy` (joules), `ersDeployedThisLap`
+  - Tyres: `tyreSurfaceTemp`, `tyreInnerTemp` (arrays [RL,RR,FL,FR] in °C)
+  - Compound: `tyreCompoundVisual` (16=soft, 17=medium, 18=hard), `tyresAgeLaps`
+  - Damage: `floorDamage`, `diffuserDamage`, `sidepodDamage`, `tyreDamage`
+  - Brake temps: `brakeTemp` (array [RL,RR,FL,FR] in °C)
+  - Flags: `vehicleFiaFlags` (0=none, 1=green, 2=blue, 3=yellow)
 - `nearbyCars`: Up to 6 cars within 1.5s gap
   - `carIndex`, `position`, `gap` (seconds)
   - `world_pos_m`: 3D position (x, y, z in meters)

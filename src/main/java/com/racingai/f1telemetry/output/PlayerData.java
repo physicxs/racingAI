@@ -37,20 +37,84 @@ public class PlayerData {
     @JsonProperty("world_pos_m")
     private WorldPosition worldPosM;
 
-    public PlayerData() {
-    }
+    // Orientation
+    @JsonProperty("yaw")
+    private float yaw;
 
-    public PlayerData(int position, int lapNumber, float lapDistance, int speed, int gear,
-                     float throttle, float brake, float steering, TyreWearData tyreWear) {
-        this.position = position;
-        this.lapNumber = lapNumber;
-        this.lapDistance = lapDistance;
-        this.speed = speed;
-        this.gear = gear;
-        this.throttle = throttle;
-        this.brake = brake;
-        this.steering = steering;
-        this.tyreWear = tyreWear;
+    @JsonProperty("pitch")
+    private float pitch;
+
+    @JsonProperty("roll")
+    private float roll;
+
+    // G-forces
+    @JsonProperty("gForceLateral")
+    private float gForceLateral;
+
+    @JsonProperty("gForceLongitudinal")
+    private float gForceLongitudinal;
+
+    // DRS
+    @JsonProperty("drs")
+    private int drs;
+
+    @JsonProperty("drsAllowed")
+    private int drsAllowed;
+
+    // ERS
+    @JsonProperty("ersDeployMode")
+    private int ersDeployMode;
+
+    @JsonProperty("ersStoreEnergy")
+    private float ersStoreEnergy;
+
+    @JsonProperty("ersDeployedThisLap")
+    private float ersDeployedThisLap;
+
+    @JsonProperty("ersHarvestedThisLapMGUK")
+    private float ersHarvestedThisLapMGUK;
+
+    @JsonProperty("ersHarvestedThisLapMGUH")
+    private float ersHarvestedThisLapMGUH;
+
+    // Tyre info
+    @JsonProperty("tyreSurfaceTemp")
+    private int[] tyreSurfaceTemp;
+
+    @JsonProperty("tyreInnerTemp")
+    private int[] tyreInnerTemp;
+
+    @JsonProperty("tyreCompound")
+    private int tyreCompound;
+
+    @JsonProperty("tyreCompoundVisual")
+    private int tyreCompoundVisual;
+
+    @JsonProperty("tyresAgeLaps")
+    private int tyresAgeLaps;
+
+    @JsonProperty("tyreDamage")
+    private int[] tyreDamage;
+
+    // Brake temps
+    @JsonProperty("brakeTemp")
+    private int[] brakeTemp;
+
+    // Damage
+    @JsonProperty("floorDamage")
+    private int floorDamage;
+
+    @JsonProperty("diffuserDamage")
+    private int diffuserDamage;
+
+    @JsonProperty("sidepodDamage")
+    private int sidepodDamage;
+
+    // Flags
+    @JsonProperty("vehicleFiaFlags")
+    private int vehicleFiaFlags;
+
+    public PlayerData() {
     }
 
     // Getters and setters
@@ -133,4 +197,28 @@ public class PlayerData {
     public void setWorldPosM(WorldPosition worldPosM) {
         this.worldPosM = worldPosM;
     }
+
+    public void setYaw(float yaw) { this.yaw = yaw; }
+    public void setPitch(float pitch) { this.pitch = pitch; }
+    public void setRoll(float roll) { this.roll = roll; }
+    public void setGForceLateral(float g) { this.gForceLateral = g; }
+    public void setGForceLongitudinal(float g) { this.gForceLongitudinal = g; }
+    public void setDrs(int drs) { this.drs = drs; }
+    public void setDrsAllowed(int drsAllowed) { this.drsAllowed = drsAllowed; }
+    public void setErsDeployMode(int mode) { this.ersDeployMode = mode; }
+    public void setErsStoreEnergy(float e) { this.ersStoreEnergy = e; }
+    public void setErsDeployedThisLap(float e) { this.ersDeployedThisLap = e; }
+    public void setErsHarvestedThisLapMGUK(float e) { this.ersHarvestedThisLapMGUK = e; }
+    public void setErsHarvestedThisLapMGUH(float e) { this.ersHarvestedThisLapMGUH = e; }
+    public void setTyreSurfaceTemp(int[] t) { this.tyreSurfaceTemp = t; }
+    public void setTyreInnerTemp(int[] t) { this.tyreInnerTemp = t; }
+    public void setTyreCompound(int c) { this.tyreCompound = c; }
+    public void setTyreCompoundVisual(int c) { this.tyreCompoundVisual = c; }
+    public void setTyresAgeLaps(int a) { this.tyresAgeLaps = a; }
+    public void setTyreDamage(int[] d) { this.tyreDamage = d; }
+    public void setBrakeTemp(int[] t) { this.brakeTemp = t; }
+    public void setFloorDamage(int d) { this.floorDamage = d; }
+    public void setDiffuserDamage(int d) { this.diffuserDamage = d; }
+    public void setSidepodDamage(int d) { this.sidepodDamage = d; }
+    public void setVehicleFiaFlags(int f) { this.vehicleFiaFlags = f; }
 }

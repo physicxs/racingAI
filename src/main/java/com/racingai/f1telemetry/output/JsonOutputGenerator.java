@@ -84,7 +84,20 @@ public class JsonOutputGenerator {
     private MetaData buildMetaData(SessionState sessionState) {
         Byte trackId = sessionState.getTrackId();
         Integer trackLength = sessionState.getTrackLength();
-        return new MetaData(trackId != null ? trackId.intValue() : null, trackLength);
+        MetaData meta = new MetaData(trackId != null ? trackId.intValue() : null, trackLength);
+
+        Short sc = sessionState.getSafetyCarStatus();
+        if (sc != null) meta.setSafetyCarStatus(sc.intValue());
+        Short w = sessionState.getWeather();
+        if (w != null) meta.setWeather(w.intValue());
+        Byte tt = sessionState.getTrackTemperature();
+        if (tt != null) meta.setTrackTemperature(tt.intValue());
+        Byte at = sessionState.getAirTemperature();
+        if (at != null) meta.setAirTemperature(at.intValue());
+        Short tl = sessionState.getTotalLaps();
+        if (tl != null) meta.setTotalLaps(tl.intValue());
+
+        return meta;
     }
 
     /**
@@ -118,6 +131,53 @@ public class JsonOutputGenerator {
             playerCar.getWorldPositionZ()
         );
         player.setWorldPosM(worldPos);
+
+        // Orientation
+        player.setYaw(playerCar.getYaw());
+        player.setPitch(playerCar.getPitch());
+        player.setRoll(playerCar.getRoll());
+
+        // G-forces
+        player.setGForceLateral(playerCar.getGForceLateral());
+        player.setGForceLongitudinal(playerCar.getGForceLongitudinal());
+
+        // DRS
+        player.setDrs(playerCar.getDrs());
+        player.setDrsAllowed(playerCar.getDrsAllowed());
+
+        // ERS
+        player.setErsDeployMode(playerCar.getErsDeployMode());
+        player.setErsStoreEnergy(playerCar.getErsStoreEnergy());
+        player.setErsDeployedThisLap(playerCar.getErsDeployedThisLap());
+        player.setErsHarvestedThisLapMGUK(playerCar.getErsHarvestedThisLapMGUK());
+        player.setErsHarvestedThisLapMGUH(playerCar.getErsHarvestedThisLapMGUH());
+
+        // Tyre temps (convert short[] to int[])
+        short[] surfTemp = playerCar.getTyresSurfaceTemperature();
+        player.setTyreSurfaceTemp(new int[]{surfTemp[0], surfTemp[1], surfTemp[2], surfTemp[3]});
+        short[] innerTemp = playerCar.getTyresInnerTemperature();
+        player.setTyreInnerTemp(new int[]{innerTemp[0], innerTemp[1], innerTemp[2], innerTemp[3]});
+
+        // Tyre compound
+        player.setTyreCompound(playerCar.getActualTyreCompound());
+        player.setTyreCompoundVisual(playerCar.getVisualTyreCompound());
+        player.setTyresAgeLaps(playerCar.getTyresAgeLaps());
+
+        // Tyre damage
+        short[] tyreDmg = playerCar.getTyresDamage();
+        player.setTyreDamage(new int[]{tyreDmg[0], tyreDmg[1], tyreDmg[2], tyreDmg[3]});
+
+        // Brake temps
+        int[] brakeTemp = playerCar.getBrakesTemperature();
+        player.setBrakeTemp(brakeTemp.clone());
+
+        // Damage
+        player.setFloorDamage(playerCar.getFloorDamage());
+        player.setDiffuserDamage(playerCar.getDiffuserDamage());
+        player.setSidepodDamage(playerCar.getSidepodDamage());
+
+        // FIA flags
+        player.setVehicleFiaFlags(playerCar.getVehicleFiaFlags());
 
         return player;
     }

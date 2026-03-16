@@ -350,6 +350,8 @@ class TrackMapApp:
     PROGRESS_BAR_H = 8
     PROGRESS_BG = '#333355'
     PROGRESS_FG = '#ff5555'
+    STATS_W = 300
+    STATS_SEP_COLOR = '#444466'
 
     def __init__(self, track_map, reader=None, replay_mode=False):
         self.track_map = track_map
@@ -358,6 +360,7 @@ class TrackMapApp:
         self.follow_player = False
         self.needs_redraw = False
         self.drag_start = None
+        self.last_data = None
 
         self.transform = CoordTransform(
             track_map['us'], track_map['vs'],
@@ -376,14 +379,25 @@ class TrackMapApp:
         self.root.attributes('-topmost', True)
         self.root.after(100, lambda: self.root.attributes('-topmost', False))
 
+        self.main_frame = tk.Frame(self.root, bg=self.BG_COLOR)
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+
         self.canvas = tk.Canvas(
-            self.root,
+            self.main_frame,
             width=self.CANVAS_W,
             height=self.CANVAS_H,
             bg=self.BG_COLOR,
             highlightthickness=0
         )
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.stats_canvas = tk.Canvas(
+            self.main_frame,
+            width=self.STATS_W,
+            bg=self.BG_COLOR,
+            highlightthickness=0
+        )
+        self.stats_canvas.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Bind events
         self.canvas.bind('<Configure>', self._on_resize)
@@ -486,6 +500,7 @@ class TrackMapApp:
         )
 
         self.needs_redraw = False
+        self._draw_stats(self.last_data)
 
     def _draw_track(self):
         """Draw the track outline as a closed polyline."""
@@ -527,6 +542,274 @@ class TrackMapApp:
             sx + r + 4, sy - r - 2, anchor='sw', fill=self.START_COLOR,
             font=('Courier', 9), text='S/F'
         )
+
+    # ─── Stats Panel ─────────────────────────────────────────────────────
+
+    def _draw_stats(self, data):
+        """Draw the telemetry stats panel."""
+        c = self.stats_canvas
+        c.delete('all')
+        w = self.STATS_W
+        h = max(int(c.winfo_height()), self.CANVAS_H)
+
+        # Separator line
+        c.create_line(0, 0, 0, h, fill=self.STATS_SEP_COLOR, width=1)
+
+        if not data:
+            c.create_text(w // 2, h // 2, anchor='center',
+                          fill='#555577', font=('Courier', 11),
+                          text='Waiting for\ntelemetry...')
+            return
+
+        player = data.get('player', {})
+        meta = data.get('meta', {})
+        y = 8
+        mx = 15  # left margin
+        bw = w - 30  # bar width
+
+        # ── Speed / Gear ──
+        speed = player.get('speed', 0)
+        gear = player.get('gear', 0)
+        gear_str = 'N' if gear == 0 else ('R' if gear < 0 else str(gear))
+
+        c.create_text(w // 2, y, anchor='n', fill='#ffffff',
+                      font=('Courier', 28, 'bold'), text=f'{speed}')
+        y += 36
+        c.create_text(w // 2, y, anchor='n', fill='#777799',
+                      font=('Courier', 9), text='km/h')
+        y += 16
+        c.create_text(w // 2, y, anchor='n', fill='#ffcc00',
+                      font=('Courier', 16, 'bold'), text=f'GEAR {gear_str}')
+        y += 28
+
+        # ── Throttle / Brake / Steering bars ──
+        bar_h = 12
+        for label, val, color, centered in [
+            ('THR', player.get('throttle', 0.0), '#00cc44', False),
+            ('BRK', player.get('brake', 0.0), '#ff3333', False),
+            ('STR', player.get('steering', 0.0), '#4488ff', True),
+        ]:
+            c.create_text(mx, y + bar_h // 2, anchor='w', fill='#666688',
+                          font=('Courier', 8), text=label)
+            bx = mx + 30
+            bw2 = w - bx - mx
+            # Background
+            c.create_rectangle(bx, y, bx + bw2, y + bar_h,
+                               fill='#222240', outline='#333355', width=1)
+            if centered:
+                # Center-based bar for steering
+                mid = bx + bw2 // 2
+                fill_w = int(abs(val) * bw2 / 2)
+                if val < 0:
+                    c.create_rectangle(mid - fill_w, y + 1, mid, y + bar_h - 1,
+                                       fill=color, outline='')
+                else:
+                    c.create_rectangle(mid, y + 1, mid + fill_w, y + bar_h - 1,
+                                       fill=color, outline='')
+                c.create_line(mid, y, mid, y + bar_h, fill='#555577')
+                c.create_text(bx + bw2 + 4, y + bar_h // 2, anchor='w',
+                              fill='#888899', font=('Courier', 7),
+                              text=f'{val:+.2f}')
+            else:
+                fill_w = int(val * bw2)
+                c.create_rectangle(bx, y + 1, bx + fill_w, y + bar_h - 1,
+                                   fill=color, outline='')
+                c.create_text(bx + bw2 + 4, y + bar_h // 2, anchor='w',
+                              fill='#888899', font=('Courier', 7),
+                              text=f'{val:.0%}')
+            y += bar_h + 4
+        y += 4
+
+        # ── DRS / ERS indicators ──
+        drs = player.get('drs', 0)
+        drs_allowed = player.get('drsAllowed', 0)
+        ers_mode = player.get('ersDeployMode', 0)
+
+        box_w = (w - 3 * mx) // 2
+        box_h = 22
+
+        # DRS
+        drs_col = '#00ff00' if drs else ('#ffcc00' if drs_allowed else '#444466')
+        drs_txt = 'DRS ON' if drs else ('DRS RDY' if drs_allowed else 'DRS')
+        drs_fill = drs_col if drs else '#1a1a2e'
+        drs_fg = '#000000' if drs else drs_col
+        c.create_rectangle(mx, y, mx + box_w, y + box_h,
+                           fill=drs_fill, outline=drs_col, width=1)
+        c.create_text(mx + box_w // 2, y + box_h // 2, anchor='center',
+                      fill=drs_fg, font=('Courier', 9, 'bold'), text=drs_txt)
+
+        # ERS
+        ers_name = ERS_MODE_NAMES.get(ers_mode, str(ers_mode))
+        ers_col = ERS_MODE_COLORS.get(ers_mode, '#444466')
+        ex = w - mx - box_w
+        c.create_rectangle(ex, y, ex + box_w, y + box_h,
+                           fill='#1a1a2e', outline=ers_col, width=1)
+        c.create_text(ex + box_w // 2, y + box_h // 2, anchor='center',
+                      fill=ers_col, font=('Courier', 9, 'bold'),
+                      text=f'ERS {ers_name}')
+        y += box_h + 4
+
+        # ERS energy bar
+        ers_energy = player.get('ersStoreEnergy', 0.0)
+        ers_pct = min(1.0, ers_energy / ERS_MAX_ENERGY) if ERS_MAX_ENERGY > 0 else 0
+        c.create_text(mx, y + bar_h // 2, anchor='w', fill='#666688',
+                      font=('Courier', 8), text='ERS')
+        ebx = mx + 30
+        ebw = w - ebx - mx
+        c.create_rectangle(ebx, y, ebx + ebw, y + bar_h,
+                           fill='#222240', outline='#333355', width=1)
+        c.create_rectangle(ebx, y + 1, ebx + int(ers_pct * ebw), y + bar_h - 1,
+                           fill='#9933ff', outline='')
+        c.create_text(ebx + ebw + 4, y + bar_h // 2, anchor='w',
+                      fill='#888899', font=('Courier', 7),
+                      text=f'{ers_pct:.0%}')
+        y += bar_h + 10
+
+        # ── G-Force plot ──
+        c.create_text(w // 2, y, anchor='n', fill='#8888aa',
+                      font=('Courier', 9, 'bold'), text='G-FORCE')
+        y += 16
+        g_lat = player.get('gForceLateral', 0.0)
+        g_lon = player.get('gForceLongitudinal', 0.0)
+        gf_cx = w // 2
+        gf_r = 40
+        gf_cy = y + gf_r
+
+        # Circle + crosshairs
+        c.create_oval(gf_cx - gf_r, gf_cy - gf_r, gf_cx + gf_r, gf_cy + gf_r,
+                      outline='#333355', width=1)
+        c.create_line(gf_cx - gf_r, gf_cy, gf_cx + gf_r, gf_cy, fill='#2a2a44')
+        c.create_line(gf_cx, gf_cy - gf_r, gf_cx, gf_cy + gf_r, fill='#2a2a44')
+
+        # G-force dot (5G = full radius)
+        max_g = 5.0
+        dx = (g_lat / max_g) * gf_r
+        dy = (-g_lon / max_g) * gf_r
+        dot_r = 4
+        c.create_oval(gf_cx + dx - dot_r, gf_cy + dy - dot_r,
+                      gf_cx + dx + dot_r, gf_cy + dy + dot_r,
+                      fill='#ff3333', outline='#ff6666')
+        c.create_text(gf_cx, gf_cy + gf_r + 8, anchor='n', fill='#666688',
+                      font=('Courier', 8),
+                      text=f'Lat:{g_lat:+.1f}G  Lon:{g_lon:+.1f}G')
+        y = gf_cy + gf_r + 24
+
+        # ── Tyres ──
+        c.create_text(w // 2, y, anchor='n', fill='#8888aa',
+                      font=('Courier', 9, 'bold'), text='TYRES')
+        y += 16
+
+        tyre_wear = player.get('tyreWear', {})
+        tyre_surf = player.get('tyreSurfaceTemp', [0, 0, 0, 0])
+        # Arrays are [RL, RR, FL, FR] from F1 spec
+        if isinstance(tyre_wear, dict):
+            wear = [tyre_wear.get('frontLeft', 0), tyre_wear.get('frontRight', 0),
+                    tyre_wear.get('rearLeft', 0), tyre_wear.get('rearRight', 0)]
+        else:
+            wear = [0, 0, 0, 0]
+        # Surface temps: map from [RL,RR,FL,FR] to [FL,FR,RL,RR]
+        if len(tyre_surf) >= 4:
+            temps = [tyre_surf[2], tyre_surf[3], tyre_surf[0], tyre_surf[1]]
+        else:
+            temps = [0, 0, 0, 0]
+
+        tw = 58
+        th = 36
+        gap = 16
+        lx = w // 2 - tw - gap // 2
+        rx = w // 2 + gap // 2
+        labels = ['FL', 'FR', 'RL', 'RR']
+        positions = [(lx, y), (rx, y), (lx, y + th + 4), (rx, y + th + 4)]
+
+        for idx, (tx, ty) in enumerate(positions):
+            wv = wear[idx]
+            tv = temps[idx]
+            # Wear color
+            if wv < 30:
+                wc = '#00cc44'
+            elif wv < 60:
+                wc = '#ffcc00'
+            else:
+                wc = '#ff3333'
+            # Temp color
+            if tv < 80:
+                tc_col = '#3399ff'
+            elif tv < 100:
+                tc_col = '#00cc44'
+            elif tv < 110:
+                tc_col = '#ffcc00'
+            else:
+                tc_col = '#ff3333'
+
+            c.create_rectangle(tx, ty, tx + tw, ty + th,
+                               fill='#222240', outline='#333355', width=1)
+            c.create_text(tx + tw // 2, ty + 10, anchor='center',
+                          fill=wc, font=('Courier', 10, 'bold'),
+                          text=f'{labels[idx]} {wv:.0f}%')
+            c.create_text(tx + tw // 2, ty + 26, anchor='center',
+                          fill=tc_col, font=('Courier', 8),
+                          text=f'{tv}\u00b0C')
+
+        y = positions[2][1] + th + 6
+
+        # Compound + age
+        compound_vis = player.get('tyreCompoundVisual', 0)
+        tyre_age = player.get('tyresAgeLaps', 0)
+        cname, ccol = COMPOUND_NAMES.get(compound_vis, (f'C{compound_vis}', '#aaaaaa'))
+        c.create_text(w // 2, y, anchor='n', fill=ccol,
+                      font=('Courier', 9, 'bold'),
+                      text=f'{cname}  Age: {tyre_age} laps')
+        y += 18
+
+        # ── Damage ──
+        c.create_text(w // 2, y, anchor='n', fill='#8888aa',
+                      font=('Courier', 9, 'bold'), text='DAMAGE')
+        y += 16
+        for lbl, val in [('Floor', player.get('floorDamage', 0)),
+                         ('Diffuser', player.get('diffuserDamage', 0)),
+                         ('Sidepod', player.get('sidepodDamage', 0))]:
+            if val == 0:
+                dc = '#00cc44'
+                dt = 'OK'
+            else:
+                dc = '#ffcc00' if val < 50 else '#ff3333'
+                dt = f'{val}%'
+            c.create_text(mx + 10, y, anchor='w', fill='#777799',
+                          font=('Courier', 8), text=f'{lbl}:')
+            c.create_text(mx + 80, y, anchor='w', fill=dc,
+                          font=('Courier', 8, 'bold'), text=dt)
+            y += 14
+        y += 6
+
+        # ── Flags / Safety Car / Weather ──
+        sc = meta.get('safety_car', 0)
+        sc_name = SC_NAMES.get(sc, '')
+        flag = player.get('vehicleFiaFlags', 0)
+        flag_col = FLAG_COLORS.get(flag, '#444466')
+        weather = meta.get('weather', 0)
+        weather_name = WEATHER_NAMES.get(weather, '')
+        track_temp = meta.get('track_temp', 0)
+        air_temp = meta.get('air_temp', 0)
+
+        if sc_name:
+            sc_col = '#ffcc00' if sc == 2 else '#ff3333'
+            c.create_rectangle(mx, y, w - mx, y + 20,
+                               fill='#1a1a2e', outline=sc_col, width=1)
+            c.create_text(w // 2, y + 10, anchor='center',
+                          fill=sc_col, font=('Courier', 10, 'bold'),
+                          text=sc_name)
+            y += 24
+
+        if flag > 0:
+            flag_names = {1: 'GREEN', 2: 'BLUE', 3: 'YELLOW', 4: 'RED'}
+            fname = flag_names.get(flag, f'FLAG {flag}')
+            c.create_text(w // 2, y, anchor='n', fill=flag_col,
+                          font=('Courier', 9, 'bold'), text=fname)
+            y += 16
+
+        c.create_text(w // 2, y, anchor='n', fill='#555577',
+                      font=('Courier', 8),
+                      text=f'{weather_name}  Track:{track_temp}\u00b0C  Air:{air_temp}\u00b0C')
 
     # ─── Event Handlers ───────────────────────────────────────────────────
 
@@ -623,6 +906,7 @@ class TrackMapApp:
         data = self.reader.get_latest()
 
         if data:
+            self.last_data = data
             player = data.get('player', {})
             lap_dist = player.get('lapDistance', 0.0)
             position = player.get('position', 0)
@@ -720,6 +1004,9 @@ class TrackMapApp:
                     self.replay_text,
                     text=f"{state}  {cur} / {tot}  [{spd_str}]  Space=Play/Pause  \u2190\u2192=\u00b15s  1-4=Speed"
                 )
+
+            # Update stats panel
+            self._draw_stats(data)
         else:
             # Still handle redraw even without new data (e.g. user zoomed)
             if self.needs_redraw:
@@ -779,6 +1066,28 @@ TRACK_NAMES = {
     29: "Jeddah (Saudi Arabia)", 30: "Miami (USA)",
     31: "Las Vegas (USA)", 32: "Losail (Qatar)",
 }
+
+
+COMPOUND_NAMES = {
+    16: ('SOFT', '#ff3333'), 17: ('MEDIUM', '#ffcc00'), 18: ('HARD', '#ffffff'),
+    7: ('INTER', '#00cc44'), 8: ('WET', '#3399ff'),
+}
+
+WEATHER_NAMES = {
+    0: 'Clear', 1: 'Light Cloud', 2: 'Overcast',
+    3: 'Light Rain', 4: 'Heavy Rain', 5: 'Storm',
+}
+
+SC_NAMES = {0: '', 1: 'SAFETY CAR', 2: 'VSC', 3: 'FORMATION'}
+
+FLAG_COLORS = {
+    -1: '#444466', 0: '#444466', 1: '#00cc44',
+    2: '#3399ff', 3: '#ffcc00', 4: '#ff0000',
+}
+
+ERS_MODE_NAMES = {0: 'NONE', 1: 'MED', 2: 'HOTLAP', 3: 'OVERTAKE'}
+ERS_MODE_COLORS = {0: '#444466', 1: '#ffcc00', 2: '#ff6600', 3: '#ff3333'}
+ERS_MAX_ENERGY = 4_000_000.0  # 4 MJ
 
 
 def get_track_name_safe(track_id):
