@@ -5,6 +5,13 @@ F1 2025 Live Track Map GUI
 Displays a real-time track map with the player car's position.
 Reads a pre-built track map JSON and live telemetry from stdin.
 
+Controls:
+    Scroll wheel    Zoom in/out
+    Click + drag    Pan the map
+    R               Reset zoom to fit
+    F               Follow player car (toggle)
+    +/-             Zoom in/out
+
 Usage:
     mvn -q exec:java -Dexec.mainClass="..." 2>&1 | python3 track_map_live.py <track_map.json>
 """
@@ -36,36 +43,79 @@ def load_track_map(path):
     }
 
 
-# ─── Coordinate Transform ────────────────────────────────────────────────────
+# ─── Coordinate Transform with Zoom/Pan ──────────────────────────────────────
 
 class CoordTransform:
-    """Maps track (u, v) coordinates to canvas pixel coordinates."""
+    """Maps track (u, v) coordinates to canvas pixel coordinates with zoom/pan."""
 
     def __init__(self, us, vs, canvas_w, canvas_h, margin=50):
-        min_u, max_u = min(us), max(us)
-        min_v, max_v = min(vs), max(vs)
+        self.canvas_w = canvas_w
+        self.canvas_h = canvas_h
 
-        range_u = max_u - min_u or 1.0
-        range_v = max_v - min_v or 1.0
+        self.min_u, self.max_u = min(us), max(us)
+        self.min_v, self.max_v = min(vs), max(vs)
+
+        range_u = self.max_u - self.min_u or 1.0
+        range_v = self.max_v - self.min_v or 1.0
 
         scale_u = (canvas_w - 2 * margin) / range_u
         scale_v = (canvas_h - 2 * margin) / range_v
-        self.scale = min(scale_u, scale_v)
+        self.base_scale = min(scale_u, scale_v)
 
-        # Center the track in the canvas
-        scaled_w = range_u * self.scale
-        scaled_h = range_v * self.scale
-        self.offset_x = (canvas_w - scaled_w) / 2
-        self.offset_y = (canvas_h - scaled_h) / 2
+        # Center of track in track coords
+        self.center_u = (self.min_u + self.max_u) / 2.0
+        self.center_v = (self.min_v + self.max_v) / 2.0
 
-        self.min_u = min_u
-        self.min_v = min_v
+        # Zoom and pan state
+        self.zoom = 1.0
+        self.pan_x = 0.0  # pixel offset
+        self.pan_y = 0.0
 
     def to_canvas(self, u, v):
         """Convert track (u, v) to canvas (x, y)."""
-        cx = (u - self.min_u) * self.scale + self.offset_x
-        cy = (v - self.min_v) * self.scale + self.offset_y
+        scale = self.base_scale * self.zoom
+        cx = (u - self.center_u) * scale + self.canvas_w / 2.0 + self.pan_x
+        cy = (v - self.center_v) * scale + self.canvas_h / 2.0 + self.pan_y
         return cx, cy
+
+    def to_track(self, cx, cy):
+        """Convert canvas (x, y) back to track (u, v)."""
+        scale = self.base_scale * self.zoom
+        u = (cx - self.canvas_w / 2.0 - self.pan_x) / scale + self.center_u
+        v = (cy - self.canvas_h / 2.0 - self.pan_y) / scale + self.center_v
+        return u, v
+
+    def zoom_at(self, factor, cx, cy):
+        """Zoom by factor, keeping canvas point (cx, cy) fixed."""
+        # Track coord under cursor before zoom
+        tu, tv = self.to_track(cx, cy)
+
+        self.zoom *= factor
+
+        # Where that track coord maps after zoom
+        new_cx, new_cy = self.to_canvas(tu, tv)
+
+        # Adjust pan so the cursor stays over the same track point
+        self.pan_x += cx - new_cx
+        self.pan_y += cy - new_cy
+
+    def reset(self, canvas_w, canvas_h):
+        """Reset to fit the full track."""
+        self.canvas_w = canvas_w
+        self.canvas_h = canvas_h
+        self.zoom = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+
+    def center_on(self, u, v):
+        """Center the view on a track coordinate."""
+        scale = self.base_scale * self.zoom
+        target_cx = self.canvas_w / 2.0
+        target_cy = self.canvas_h / 2.0
+        current_cx = (u - self.center_u) * scale + self.canvas_w / 2.0 + self.pan_x
+        current_cy = (v - self.center_v) * scale + self.canvas_h / 2.0 + self.pan_y
+        self.pan_x += target_cx - current_cx
+        self.pan_y += target_cy - current_cy
 
 
 # ─── Car Position Lookup ─────────────────────────────────────────────────────
@@ -133,7 +183,7 @@ class TelemetryReader:
 # ─── GUI Application ─────────────────────────────────────────────────────────
 
 class TrackMapApp:
-    """Tkinter application showing live track map."""
+    """Tkinter application showing live track map with zoom/pan."""
 
     CANVAS_W = 800
     CANVAS_H = 600
@@ -147,10 +197,15 @@ class TrackMapApp:
     HUD_COLOR = '#cccccc'
     UPDATE_MS = 100  # 10 Hz
     MAX_OTHER_CARS = 21
+    ZOOM_FACTOR = 1.2
 
     def __init__(self, track_map):
         self.track_map = track_map
         self.reader = TelemetryReader()
+        self.follow_player = False
+        self.needs_redraw = False
+        self.drag_start = None
+
         self.transform = CoordTransform(
             track_map['us'], track_map['vs'],
             self.CANVAS_W, self.CANVAS_H
@@ -176,13 +231,31 @@ class TrackMapApp:
         )
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Handle window resize
+        # Bind events
         self.canvas.bind('<Configure>', self._on_resize)
+        self.canvas.bind('<MouseWheel>', self._on_scroll)          # macOS/Windows
+        self.canvas.bind('<Button-4>', self._on_scroll_up)         # Linux
+        self.canvas.bind('<Button-5>', self._on_scroll_down)       # Linux
+        self.canvas.bind('<ButtonPress-1>', self._on_drag_start)
+        self.canvas.bind('<B1-Motion>', self._on_drag)
+        self.canvas.bind('<ButtonRelease-1>', self._on_drag_end)
+        self.root.bind('<Key-r>', self._on_reset)
+        self.root.bind('<Key-R>', self._on_reset)
+        self.root.bind('<Key-f>', self._on_toggle_follow)
+        self.root.bind('<Key-F>', self._on_toggle_follow)
+        self.root.bind('<Key-plus>', self._on_zoom_in_key)
+        self.root.bind('<Key-equal>', self._on_zoom_in_key)
+        self.root.bind('<Key-minus>', self._on_zoom_out_key)
 
-        # Draw track
+        # Initial draw
+        self._full_redraw()
+
+    def _full_redraw(self):
+        """Redraw everything on canvas."""
+        self.canvas.delete('all')
         self._draw_track()
 
-        # Create other car markers (drawn first so player is on top)
+        # Other car markers
         self.other_car_markers = []
         self.other_car_labels = []
         for _ in range(self.MAX_OTHER_CARS):
@@ -197,24 +270,35 @@ class TrackMapApp:
             self.other_car_markers.append(marker)
             self.other_car_labels.append(label)
 
-        # Create player car marker (on top of others)
+        # Player marker
         self.car_marker = self.canvas.create_oval(
             0, 0, 0, 0, fill=self.CAR_COLOR, outline='#ff6666', width=2
         )
 
-        # HUD text
+        # HUD text (fixed position, not affected by zoom)
         self.hud_text = self.canvas.create_text(
             10, 10, anchor='nw', fill=self.HUD_COLOR,
             font=('Courier', 14, 'bold'), text='Waiting for telemetry...'
         )
 
+        # Zoom info
+        zoom_pct = int(self.transform.zoom * 100)
+        follow_str = '  [F]ollow ON' if self.follow_player else ''
+        self.zoom_text = self.canvas.create_text(
+            self.CANVAS_W - 10, 10, anchor='ne', fill='#555577',
+            font=('Courier', 10),
+            text=f'Zoom: {zoom_pct}%{follow_str}  [R]eset  Scroll=Zoom  Drag=Pan'
+        )
+
         # Track name
-        track_name = get_track_name_safe(track_map.get('track_id'))
+        track_name = get_track_name_safe(self.track_map.get('track_id'))
         self.title_text = self.canvas.create_text(
             self.CANVAS_W // 2, self.CANVAS_H - 15,
             anchor='s', fill='#666688',
             font=('Courier', 11), text=track_name
         )
+
+        self.needs_redraw = False
 
     def _draw_track(self):
         """Draw the track outline as a closed polyline."""
@@ -222,7 +306,6 @@ class TrackMapApp:
         us = self.track_map['us']
         vs = self.track_map['vs']
 
-        # Sample every few meters to avoid too many points
         step = max(1, len(us) // 2000)
         for i in range(0, len(us), step):
             cx, cy = self.transform.to_canvas(us[i], vs[i])
@@ -233,70 +316,95 @@ class TrackMapApp:
         coords.extend([cx, cy])
 
         if len(coords) >= 4:
-            self.track_line = self.canvas.create_line(
-                *coords, fill=self.TRACK_COLOR, width=8,
+            # Scale track width with zoom
+            track_w = max(2, int(8 * min(self.transform.zoom, 3)))
+            center_w = max(1, int(2 * min(self.transform.zoom, 3)))
+
+            self.canvas.create_line(
+                *coords, fill=self.TRACK_COLOR, width=track_w,
                 smooth=True, capstyle='round', joinstyle='round'
             )
-            # Draw a thinner bright center line
-            self.track_center = self.canvas.create_line(
-                *coords, fill='#6a6a9a', width=2,
+            self.canvas.create_line(
+                *coords, fill='#6a6a9a', width=center_w,
                 smooth=True
             )
 
         # Start/finish marker
         sx, sy = self.transform.to_canvas(us[0], vs[0])
+        r = max(3, int(4 * min(self.transform.zoom, 3)))
         self.canvas.create_oval(
-            sx - 4, sy - 4, sx + 4, sy + 4,
+            sx - r, sy - r, sx + r, sy + r,
             fill=self.START_COLOR, outline=self.START_COLOR
         )
         self.canvas.create_text(
-            sx + 10, sy - 10, anchor='sw', fill=self.START_COLOR,
+            sx + r + 4, sy - r - 2, anchor='sw', fill=self.START_COLOR,
             font=('Courier', 9), text='S/F'
         )
 
+    # ─── Event Handlers ───────────────────────────────────────────────────
+
     def _on_resize(self, event):
-        """Handle window resize by recalculating transform and redrawing."""
         new_w = event.width
         new_h = event.height
         if new_w < 200 or new_h < 150:
             return
-
         self.CANVAS_W = new_w
         self.CANVAS_H = new_h
-        self.transform = CoordTransform(
-            self.track_map['us'], self.track_map['vs'],
-            new_w, new_h
-        )
+        self.transform.canvas_w = new_w
+        self.transform.canvas_h = new_h
+        self.needs_redraw = True
 
-        # Redraw everything
-        self.canvas.delete('all')
-        self._draw_track()
-        self.other_car_markers = []
-        self.other_car_labels = []
-        for _ in range(self.MAX_OTHER_CARS):
-            marker = self.canvas.create_oval(
-                -20, -20, -20, -20,
-                fill=self.OTHER_CAR_COLOR, outline='#66bbff', width=1
-            )
-            label = self.canvas.create_text(
-                -20, -20, text='', fill='#99ccff',
-                font=('Courier', 8), anchor='s'
-            )
-            self.other_car_markers.append(marker)
-            self.other_car_labels.append(label)
-        self.car_marker = self.canvas.create_oval(
-            0, 0, 0, 0, fill=self.CAR_COLOR, outline='#ff6666', width=2
-        )
-        self.hud_text = self.canvas.create_text(
-            10, 10, anchor='nw', fill=self.HUD_COLOR,
-            font=('Courier', 14, 'bold'), text='Waiting for telemetry...'
-        )
-        track_name = get_track_name_safe(self.track_map.get('track_id'))
-        self.title_text = self.canvas.create_text(
-            new_w // 2, new_h - 15,
-            anchor='s', fill='#666688',
-            font=('Courier', 11), text=track_name
-        )
+    def _on_scroll(self, event):
+        # macOS: event.delta is +/- 120 (or multiples)
+        if event.delta > 0:
+            self.transform.zoom_at(self.ZOOM_FACTOR, event.x, event.y)
+        else:
+            self.transform.zoom_at(1.0 / self.ZOOM_FACTOR, event.x, event.y)
+        self.needs_redraw = True
+
+    def _on_scroll_up(self, event):
+        self.transform.zoom_at(self.ZOOM_FACTOR, event.x, event.y)
+        self.needs_redraw = True
+
+    def _on_scroll_down(self, event):
+        self.transform.zoom_at(1.0 / self.ZOOM_FACTOR, event.x, event.y)
+        self.needs_redraw = True
+
+    def _on_drag_start(self, event):
+        self.drag_start = (event.x, event.y)
+
+    def _on_drag(self, event):
+        if self.drag_start:
+            dx = event.x - self.drag_start[0]
+            dy = event.y - self.drag_start[1]
+            self.transform.pan_x += dx
+            self.transform.pan_y += dy
+            self.drag_start = (event.x, event.y)
+            self.needs_redraw = True
+
+    def _on_drag_end(self, event):
+        self.drag_start = None
+
+    def _on_reset(self, event=None):
+        self.transform.reset(self.CANVAS_W, self.CANVAS_H)
+        self.follow_player = False
+        self.needs_redraw = True
+
+    def _on_toggle_follow(self, event=None):
+        self.follow_player = not self.follow_player
+        self.needs_redraw = True
+
+    def _on_zoom_in_key(self, event=None):
+        cx, cy = self.CANVAS_W / 2, self.CANVAS_H / 2
+        self.transform.zoom_at(self.ZOOM_FACTOR, cx, cy)
+        self.needs_redraw = True
+
+    def _on_zoom_out_key(self, event=None):
+        cx, cy = self.CANVAS_W / 2, self.CANVAS_H / 2
+        self.transform.zoom_at(1.0 / self.ZOOM_FACTOR, cx, cy)
+        self.needs_redraw = True
+
+    # ─── Update Loop ─────────────────────────────────────────────────────
 
     def _update(self):
         """Poll telemetry and update canvas."""
@@ -312,7 +420,17 @@ class TrackMapApp:
             throttle = player.get('throttle', 0.0)
             brake = player.get('brake', 0.0)
 
-            # Update other cars from allCars array
+            # Follow player if enabled
+            if self.follow_player:
+                pu, pv = lookup_position(self.track_map, lap_dist)
+                self.transform.center_on(pu, pv)
+                self.needs_redraw = True
+
+            # Redraw track if zoom/pan/resize changed
+            if self.needs_redraw:
+                self._full_redraw()
+
+            # Update other cars
             all_cars = data.get('allCars', [])
             for i in range(self.MAX_OTHER_CARS):
                 if i < len(all_cars):
@@ -334,31 +452,37 @@ class TrackMapApp:
                         self.other_car_labels[i], text=f'P{car_pos}'
                     )
                 else:
-                    # Hide unused markers
                     self.canvas.coords(
                         self.other_car_markers[i], -20, -20, -20, -20
                     )
-                    self.canvas.coords(
-                        self.other_car_labels[i], -20, -20
-                    )
+                    self.canvas.coords(self.other_car_labels[i], -20, -20)
                     self.canvas.itemconfig(self.other_car_labels[i], text='')
 
-            # Look up player position on track map
+            # Player position
             u, v = lookup_position(self.track_map, lap_dist)
             cx, cy = self.transform.to_canvas(u, v)
-
-            # Move player car marker (always on top)
             r = self.CAR_RADIUS
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
             self.canvas.tag_raise(self.car_marker)
 
-            # Update HUD
+            # HUD
             n_cars = len(all_cars) + 1
             hud = f"P{position}/{n_cars}  Lap {lap_num}  {speed} km/h  G{gear}"
             hud += f"  T:{throttle:.0%}  B:{brake:.0%}"
             self.canvas.itemconfig(self.hud_text, text=hud)
 
-        # Schedule next update
+            # Zoom info
+            zoom_pct = int(self.transform.zoom * 100)
+            follow_str = '  [F]ollow ON' if self.follow_player else ''
+            self.canvas.itemconfig(
+                self.zoom_text,
+                text=f'Zoom: {zoom_pct}%{follow_str}  [R]eset  Scroll=Zoom  Drag=Pan'
+            )
+        else:
+            # Still handle redraw even without new data (e.g. user zoomed)
+            if self.needs_redraw:
+                self._full_redraw()
+
         self.root.after(self.UPDATE_MS, self._update)
 
     def run(self, preview_only=False):
@@ -368,6 +492,8 @@ class TrackMapApp:
             self.root.after(self.UPDATE_MS, self._update)
         else:
             self.canvas.itemconfig(self.hud_text, text='Preview mode (no live data)')
+            # Still handle zoom/pan in preview mode
+            self._schedule_redraw_check()
 
         try:
             self.root.mainloop()
@@ -375,6 +501,18 @@ class TrackMapApp:
             pass
         finally:
             self.reader.stop()
+
+    def _schedule_redraw_check(self):
+        """Check for needed redraws in preview mode."""
+        if self.needs_redraw:
+            self._full_redraw()
+            self.canvas.itemconfig(self.hud_text, text='Preview mode (no live data)')
+            zoom_pct = int(self.transform.zoom * 100)
+            self.canvas.itemconfig(
+                self.zoom_text,
+                text=f'Zoom: {zoom_pct}%  [R]eset  Scroll=Zoom  Drag=Pan'
+            )
+        self.root.after(self.UPDATE_MS, self._schedule_redraw_check)
 
 
 # ─── Track Name Helper ────────────────────────────────────────────────────────
@@ -417,6 +555,13 @@ def main():
         print("Show a real-time track map with live car position.")
         print("  --preview  Show track map only (no live telemetry needed)")
         print()
+        print("Controls:")
+        print("  Scroll wheel    Zoom in/out (toward cursor)")
+        print("  Click + drag    Pan the map")
+        print("  +/-             Zoom in/out (center)")
+        print("  R               Reset zoom to fit")
+        print("  F               Follow player car (toggle)")
+        print()
         print("Examples:")
         print("  python3 track_map_live.py track_0_map.json --preview")
         print("  mvn -q exec:java ... 2>&1 | python3 track_map_live.py track_0_map.json")
@@ -440,6 +585,8 @@ def main():
         print("Opening preview... (close window to exit)")
     else:
         print("Starting GUI... (close window or Ctrl+C to stop)")
+
+    print("Controls: Scroll=Zoom | Drag=Pan | R=Reset | F=Follow | +/-=Zoom")
 
     app = TrackMapApp(track_map)
     app.run(preview_only=preview)
