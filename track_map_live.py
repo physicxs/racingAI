@@ -3,7 +3,8 @@
 F1 2025 Live Track Map GUI
 
 Displays a real-time track map with the player car's position.
-Reads a pre-built track map JSON and live telemetry from stdin.
+Reads a pre-built track map JSON and live telemetry from stdin,
+or replays a recorded JSONL file.
 
 Controls:
     Scroll wheel    Zoom in/out
@@ -12,13 +13,21 @@ Controls:
     F               Follow player car (toggle)
     +/-             Zoom in/out
 
+Replay controls:
+    Space           Play / pause
+    Left / Right    Skip -5s / +5s
+    1 / 2 / 3 / 4  Speed 1x / 2x / 4x / 0.5x
+    Click bar       Seek to position
+
 Usage:
-    mvn -q exec:java -Dexec.mainClass="..." 2>&1 | python3 track_map_live.py <track_map.json>
+    mvn -q exec:java ... 2>&1 | python3 track_map_live.py <track_map.json>
+    python3 track_map_live.py <track_map.json> --replay <telemetry.jsonl>
 """
 
 import json
 import sys
 import math
+import time
 import threading
 import tkinter as tk
 
@@ -180,6 +189,146 @@ class TelemetryReader:
         self.running = False
 
 
+# ─── Replay Reader ──────────────────────────────────────────────────────────
+
+class ReplayReader:
+    """Reads telemetry from a recorded JSONL file with playback controls."""
+
+    def __init__(self, path):
+        self.frames = []
+        self.frame_index = 0
+        self.playing = False
+        self.speed = 1.0
+        self.wall_start = 0.0      # wall-clock time when play started
+        self.data_start = 0        # timestamp (ms) of frame at play start
+        self.running = True
+
+        self._load(path)
+
+    def _load(self, path):
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line.startswith('{'):
+                    continue
+                try:
+                    data = json.loads(line)
+                    self.frames.append(data)
+                except json.JSONDecodeError:
+                    pass
+        if not self.frames:
+            print("ERROR: No telemetry frames found in file")
+            sys.exit(1)
+        print(f"Loaded {len(self.frames)} frames for replay")
+
+    def start(self):
+        """Begin playback immediately."""
+        self.playing = True
+        self.frame_index = 0
+        self._sync_clock()
+
+    def stop(self):
+        self.running = False
+
+    def _sync_clock(self):
+        """Sync wall clock to current frame position."""
+        self.wall_start = time.time()
+        self.data_start = self.frames[self.frame_index].get('timestamp', 0)
+
+    def get_latest(self):
+        """Return the current frame based on playback timing."""
+        if not self.frames:
+            return None
+
+        if self.playing:
+            elapsed_wall = time.time() - self.wall_start
+            elapsed_data = elapsed_wall * self.speed * 1000  # convert to ms
+            target_ts = self.data_start + elapsed_data
+
+            # Advance frame_index to match target timestamp
+            while (self.frame_index < len(self.frames) - 1 and
+                   self.frames[self.frame_index + 1].get('timestamp', 0) <= target_ts):
+                self.frame_index += 1
+
+            # Auto-pause at end
+            if self.frame_index >= len(self.frames) - 1:
+                self.playing = False
+
+        return self.frames[self.frame_index]
+
+    def toggle_play(self):
+        if self.playing:
+            self.playing = False
+        else:
+            # If at end, restart from beginning
+            if self.frame_index >= len(self.frames) - 1:
+                self.frame_index = 0
+            self.playing = True
+            self._sync_clock()
+
+    def set_speed(self, speed):
+        # Re-sync clock so speed change doesn't cause a jump
+        if self.playing:
+            self._sync_clock()
+        self.speed = speed
+
+    def seek(self, fraction):
+        """Seek to a fraction (0.0–1.0) of the recording."""
+        fraction = max(0.0, min(1.0, fraction))
+        self.frame_index = int(fraction * (len(self.frames) - 1))
+        self._sync_clock()
+
+    def skip_seconds(self, delta_s):
+        """Skip forward/backward by delta_s seconds of recording time."""
+        if not self.frames:
+            return
+        current_ts = self.frames[self.frame_index].get('timestamp', 0)
+        target_ts = current_ts + delta_s * 1000  # ms
+
+        if delta_s > 0:
+            while (self.frame_index < len(self.frames) - 1 and
+                   self.frames[self.frame_index].get('timestamp', 0) < target_ts):
+                self.frame_index += 1
+        else:
+            while (self.frame_index > 0 and
+                   self.frames[self.frame_index].get('timestamp', 0) > target_ts):
+                self.frame_index -= 1
+
+        self._sync_clock()
+
+    def progress(self):
+        """Return playback progress as 0.0–1.0."""
+        if len(self.frames) <= 1:
+            return 0.0
+        return self.frame_index / (len(self.frames) - 1)
+
+    def total_duration_s(self):
+        """Total recording duration in seconds."""
+        if len(self.frames) < 2:
+            return 0.0
+        t0 = self.frames[0].get('timestamp', 0)
+        t1 = self.frames[-1].get('timestamp', 0)
+        return (t1 - t0) / 1000.0
+
+    def current_time_s(self):
+        """Current playback position in seconds from start."""
+        if not self.frames:
+            return 0.0
+        t0 = self.frames[0].get('timestamp', 0)
+        tc = self.frames[self.frame_index].get('timestamp', 0)
+        return (tc - t0) / 1000.0
+
+    def frame_count(self):
+        return len(self.frames)
+
+
+def format_time(seconds):
+    """Format seconds as MM:SS."""
+    m = int(seconds) // 60
+    s = int(seconds) % 60
+    return f"{m:02d}:{s:02d}"
+
+
 # ─── GUI Application ─────────────────────────────────────────────────────────
 
 class TrackMapApp:
@@ -198,10 +347,14 @@ class TrackMapApp:
     UPDATE_MS = 100  # 10 Hz
     MAX_OTHER_CARS = 21
     ZOOM_FACTOR = 1.2
+    PROGRESS_BAR_H = 8
+    PROGRESS_BG = '#333355'
+    PROGRESS_FG = '#ff5555'
 
-    def __init__(self, track_map):
+    def __init__(self, track_map, reader=None, replay_mode=False):
         self.track_map = track_map
-        self.reader = TelemetryReader()
+        self.reader = reader if reader else TelemetryReader()
+        self.replay_mode = replay_mode
         self.follow_player = False
         self.needs_redraw = False
         self.drag_start = None
@@ -213,7 +366,8 @@ class TrackMapApp:
 
         # Build GUI
         self.root = tk.Tk()
-        self.root.title('F1 2025 Track Map')
+        title = 'F1 2025 Race Replay' if replay_mode else 'F1 2025 Track Map'
+        self.root.title(title)
         self.root.configure(bg=self.BG_COLOR)
         self.root.resizable(True, True)
 
@@ -236,7 +390,7 @@ class TrackMapApp:
         self.canvas.bind('<MouseWheel>', self._on_scroll)          # macOS/Windows
         self.canvas.bind('<Button-4>', self._on_scroll_up)         # Linux
         self.canvas.bind('<Button-5>', self._on_scroll_down)       # Linux
-        self.canvas.bind('<ButtonPress-1>', self._on_drag_start)
+        self.canvas.bind('<ButtonPress-1>', self._on_click)
         self.canvas.bind('<B1-Motion>', self._on_drag)
         self.canvas.bind('<ButtonRelease-1>', self._on_drag_end)
         self.root.bind('<Key-r>', self._on_reset)
@@ -246,6 +400,16 @@ class TrackMapApp:
         self.root.bind('<Key-plus>', self._on_zoom_in_key)
         self.root.bind('<Key-equal>', self._on_zoom_in_key)
         self.root.bind('<Key-minus>', self._on_zoom_out_key)
+
+        # Replay-specific bindings
+        if self.replay_mode:
+            self.root.bind('<space>', self._on_replay_toggle)
+            self.root.bind('<Left>', self._on_replay_back)
+            self.root.bind('<Right>', self._on_replay_forward)
+            self.root.bind('<Key-1>', lambda e: self._on_replay_speed(1.0))
+            self.root.bind('<Key-2>', lambda e: self._on_replay_speed(2.0))
+            self.root.bind('<Key-3>', lambda e: self._on_replay_speed(4.0))
+            self.root.bind('<Key-4>', lambda e: self._on_replay_speed(0.5))
 
         # Initial draw
         self._full_redraw()
@@ -290,10 +454,33 @@ class TrackMapApp:
             text=f'Zoom: {zoom_pct}%{follow_str}  [R]eset  Scroll=Zoom  Drag=Pan'
         )
 
+        # Progress bar (replay mode)
+        if self.replay_mode:
+            bar_y = self.CANVAS_H - 30
+            self.progress_bg = self.canvas.create_rectangle(
+                0, bar_y, self.CANVAS_W, bar_y + self.PROGRESS_BAR_H,
+                fill=self.PROGRESS_BG, outline='', width=0
+            )
+            self.progress_fill = self.canvas.create_rectangle(
+                0, bar_y, 0, bar_y + self.PROGRESS_BAR_H,
+                fill=self.PROGRESS_FG, outline='', width=0
+            )
+            # Replay status text (below HUD, left side)
+            self.replay_text = self.canvas.create_text(
+                10, 30, anchor='nw', fill='#aaaacc',
+                font=('Courier', 11),
+                text=''
+            )
+        else:
+            self.progress_bg = None
+            self.progress_fill = None
+            self.replay_text = None
+
         # Track name
         track_name = get_track_name_safe(self.track_map.get('track_id'))
+        bottom_y = self.CANVAS_H - 45 if self.replay_mode else self.CANVAS_H - 15
         self.title_text = self.canvas.create_text(
-            self.CANVAS_W // 2, self.CANVAS_H - 15,
+            self.CANVAS_W // 2, bottom_y,
             anchor='s', fill='#666688',
             font=('Courier', 11), text=track_name
         )
@@ -370,7 +557,14 @@ class TrackMapApp:
         self.transform.zoom_at(1.0 / self.ZOOM_FACTOR, event.x, event.y)
         self.needs_redraw = True
 
-    def _on_drag_start(self, event):
+    def _on_click(self, event):
+        # Check if click is on the progress bar (replay mode)
+        if self.replay_mode and isinstance(self.reader, ReplayReader):
+            bar_y = self.CANVAS_H - 30
+            if bar_y <= event.y <= bar_y + self.PROGRESS_BAR_H:
+                fraction = event.x / self.CANVAS_W
+                self.reader.seek(fraction)
+                return
         self.drag_start = (event.x, event.y)
 
     def _on_drag(self, event):
@@ -403,6 +597,24 @@ class TrackMapApp:
         cx, cy = self.CANVAS_W / 2, self.CANVAS_H / 2
         self.transform.zoom_at(1.0 / self.ZOOM_FACTOR, cx, cy)
         self.needs_redraw = True
+
+    # ─── Replay Controls ─────────────────────────────────────────────────
+
+    def _on_replay_toggle(self, event=None):
+        if isinstance(self.reader, ReplayReader):
+            self.reader.toggle_play()
+
+    def _on_replay_back(self, event=None):
+        if isinstance(self.reader, ReplayReader):
+            self.reader.skip_seconds(-5)
+
+    def _on_replay_forward(self, event=None):
+        if isinstance(self.reader, ReplayReader):
+            self.reader.skip_seconds(5)
+
+    def _on_replay_speed(self, speed):
+        if isinstance(self.reader, ReplayReader):
+            self.reader.set_speed(speed)
 
     # ─── Update Loop ─────────────────────────────────────────────────────
 
@@ -474,10 +686,40 @@ class TrackMapApp:
             # Zoom info
             zoom_pct = int(self.transform.zoom * 100)
             follow_str = '  [F]ollow ON' if self.follow_player else ''
-            self.canvas.itemconfig(
-                self.zoom_text,
-                text=f'Zoom: {zoom_pct}%{follow_str}  [R]eset  Scroll=Zoom  Drag=Pan'
-            )
+            if self.replay_mode:
+                self.canvas.itemconfig(
+                    self.zoom_text,
+                    text=f'Zoom: {zoom_pct}%{follow_str}  [R]eset  Scroll=Zoom  Drag=Pan'
+                )
+            else:
+                self.canvas.itemconfig(
+                    self.zoom_text,
+                    text=f'Zoom: {zoom_pct}%{follow_str}  [R]eset  Scroll=Zoom  Drag=Pan'
+                )
+
+            # Replay progress bar + status
+            if self.replay_mode and isinstance(self.reader, ReplayReader):
+                progress = self.reader.progress()
+                bar_y = self.CANVAS_H - 30
+                fill_w = progress * self.CANVAS_W
+                self.canvas.coords(
+                    self.progress_bg, 0, bar_y, self.CANVAS_W, bar_y + self.PROGRESS_BAR_H
+                )
+                self.canvas.coords(
+                    self.progress_fill, 0, bar_y, fill_w, bar_y + self.PROGRESS_BAR_H
+                )
+                self.canvas.tag_raise(self.progress_bg)
+                self.canvas.tag_raise(self.progress_fill)
+
+                cur = format_time(self.reader.current_time_s())
+                tot = format_time(self.reader.total_duration_s())
+                state = "Playing" if self.reader.playing else "Paused"
+                spd = self.reader.speed
+                spd_str = f"{spd:.1f}x" if spd != int(spd) else f"{int(spd)}x"
+                self.canvas.itemconfig(
+                    self.replay_text,
+                    text=f"{state}  {cur} / {tot}  [{spd_str}]  Space=Play/Pause  \u2190\u2192=\u00b15s  1-4=Speed"
+                )
         else:
             # Still handle redraw even without new data (e.g. user zoomed)
             if self.needs_redraw:
@@ -487,13 +729,15 @@ class TrackMapApp:
 
     def run(self, preview_only=False):
         """Start reader thread and tkinter mainloop."""
-        if not preview_only:
+        if preview_only:
+            self.canvas.itemconfig(self.hud_text, text='Preview mode (no live data)')
+            self._schedule_redraw_check()
+        elif self.replay_mode:
             self.reader.start()
             self.root.after(self.UPDATE_MS, self._update)
         else:
-            self.canvas.itemconfig(self.hud_text, text='Preview mode (no live data)')
-            # Still handle zoom/pan in preview mode
-            self._schedule_redraw_check()
+            self.reader.start()
+            self.root.after(self.UPDATE_MS, self._update)
 
         try:
             self.root.mainloop()
@@ -547,13 +791,27 @@ def get_track_name_safe(track_id):
 
 def main():
     preview = '--preview' in sys.argv
-    args = [a for a in sys.argv[1:] if a != '--preview']
+    replay_file = None
+
+    # Parse --replay <file>
+    raw_args = sys.argv[1:]
+    if '--replay' in raw_args:
+        idx = raw_args.index('--replay')
+        if idx + 1 < len(raw_args):
+            replay_file = raw_args[idx + 1]
+            raw_args = raw_args[:idx] + raw_args[idx + 2:]
+        else:
+            print("ERROR: --replay requires a JSONL file path")
+            sys.exit(1)
+
+    args = [a for a in raw_args if a != '--preview']
 
     if not args:
-        print("Usage: python3 track_map_live.py <track_map.json> [--preview]")
+        print("Usage: python3 track_map_live.py <track_map.json> [options]")
         print()
-        print("Show a real-time track map with live car position.")
-        print("  --preview  Show track map only (no live telemetry needed)")
+        print("Options:")
+        print("  --preview              Show track map only (no live data)")
+        print("  --replay <file.jsonl>  Replay a recorded telemetry file")
         print()
         print("Controls:")
         print("  Scroll wheel    Zoom in/out (toward cursor)")
@@ -562,8 +820,15 @@ def main():
         print("  R               Reset zoom to fit")
         print("  F               Follow player car (toggle)")
         print()
+        print("Replay controls:")
+        print("  Space           Play / pause")
+        print("  Left / Right    Skip -5s / +5s")
+        print("  1 / 2 / 3 / 4  Speed 1x / 2x / 4x / 0.5x")
+        print("  Click bar       Seek to position")
+        print()
         print("Examples:")
         print("  python3 track_map_live.py track_0_map.json --preview")
+        print("  python3 track_map_live.py track_0_map.json --replay race.jsonl")
         print("  mvn -q exec:java ... 2>&1 | python3 track_map_live.py track_0_map.json")
         sys.exit(1)
 
@@ -581,15 +846,23 @@ def main():
     print(f"Loaded track map: {track_map['num_points']} points, "
           f"{track_map['track_length']}m")
 
-    if preview:
+    if replay_file:
+        reader = ReplayReader(replay_file)
+        dur = format_time(reader.total_duration_s())
+        print(f"Replay: {reader.frame_count()} frames, {dur} duration")
+        print("Controls: Space=Play/Pause | Left/Right=Skip | 1-4=Speed | Scroll=Zoom | Drag=Pan")
+        app = TrackMapApp(track_map, reader=reader, replay_mode=True)
+        app.run()
+    elif preview:
         print("Opening preview... (close window to exit)")
+        print("Controls: Scroll=Zoom | Drag=Pan | R=Reset | +/-=Zoom")
+        app = TrackMapApp(track_map)
+        app.run(preview_only=True)
     else:
         print("Starting GUI... (close window or Ctrl+C to stop)")
-
-    print("Controls: Scroll=Zoom | Drag=Pan | R=Reset | F=Follow | +/-=Zoom")
-
-    app = TrackMapApp(track_map)
-    app.run(preview_only=preview)
+        print("Controls: Scroll=Zoom | Drag=Pan | R=Reset | F=Follow | +/-=Zoom")
+        app = TrackMapApp(track_map)
+        app.run()
 
 
 if __name__ == '__main__':

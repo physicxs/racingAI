@@ -26,6 +26,11 @@ A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry 
 ./track_map_gui.sh <track_map.json>
 ```
 
+**🔄 Race Replay** - Replay a recorded race on the track map:
+```bash
+./replay.sh <track_map.json> <telemetry.jsonl>
+```
+
 **📊 Test Inputs** - Verify controls:
 ```bash
 ./test_inputs.sh

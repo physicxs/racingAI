@@ -115,6 +115,29 @@ Test with simulated data (no game needed):
 ./track_map_gui_test.sh
 ```
 
+## Race Replay
+
+Replay a recorded race on the track map:
+
+```bash
+./replay.sh <track_map.json> <telemetry.jsonl>
+```
+
+This opens the same track map GUI with playback controls:
+
+| Control | Action |
+|---|---|
+| Space | Play / pause |
+| Left / Right | Skip -5s / +5s |
+| 1 / 2 / 3 / 4 | Speed 1x / 2x / 4x / 0.5x |
+| Click progress bar | Seek to position |
+| Scroll wheel | Zoom in/out |
+| Click + drag | Pan |
+| R | Reset zoom |
+| F | Follow player car |
+
+The progress bar at the bottom shows playback position and can be clicked to seek.
+
 ## Tips for Best Results
 
 - **Time Trial mode** is ideal — no traffic, consistent racing line
