@@ -41,6 +41,19 @@ The output file is auto-named `track_N_map.json` where N is the track ID (e.g. 0
 ./build_map.sh telemetry_20260315_105017.jsonl monaco_map.json
 ```
 
+### Build a True Centerline Map
+Computes a true geometric centerline from track edges by analyzing multiple laps with varied lateral positions. Produces an unbiased centerline (midpoint between edges) with per-point track width, instead of using the racing line as the centerline.
+
+For best results, record 3-5 laps varying your line (stay left, stay right, normal racing line).
+```bash
+./build_true_centerline.sh telemetry_race1.jsonl
+# or combine multiple recordings:
+./build_true_centerline.sh left_laps.jsonl right_laps.jsonl normal.jsonl
+# custom output name:
+./build_true_centerline.sh race.jsonl -o monaco_true_map.json
+```
+The output file is auto-named `track_N_true_map.json`. Use it the same way as a regular track map.
+
 ### Live Track Map GUI
 Shows your car moving on the track in real time with true track width rendering and a telemetry stats panel on the right (speed, tyres, DRS/ERS, G-force, damage, flags). Cars are positioned using world coordinates so you can see side-by-side battles, defensive lines, and off-track incidents.
 
@@ -155,6 +168,12 @@ mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.UDPPacketSender"
 3. Build track map:         ./build_map.sh telemetry_*.jsonl
 4. Watch live with map:     ./track_map_gui.sh track_*_map.json
 5. Replay after the race:   ./replay.sh track_*_map.json telemetry_*.jsonl
+```
+
+For a more accurate track map (true centerline instead of racing line):
+```
+3b. Record 3-5 laps with varied lines (left, right, normal)
+3c. Build true centerline:  ./build_true_centerline.sh telemetry_*.jsonl
 ```
 
 ## Configuration

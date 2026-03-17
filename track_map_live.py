@@ -43,6 +43,9 @@ def load_track_map(path):
     us = [p['u'] for p in points]
     vs = [p['v'] for p in points]
 
+    # Per-point half_width (from true centerline maps), fallback to constant
+    half_widths = [p.get('half_width', TRACK_HALF_WIDTH_M) for p in points]
+
     # Precompute unit normal vectors (perpendicular to track direction)
     n = len(us)
     normals_u = [0.0] * n
@@ -63,6 +66,10 @@ def load_track_map(path):
         normals_u[i] = -fv
         normals_v[i] = fu
 
+    is_true = data.get('true_centerline', False)
+    if is_true:
+        print(f"[track_map] True centerline map loaded (per-point track width)")
+
     return {
         'track_id': data.get('track_id'),
         'track_length': data.get('track_length_m', len(points)),
@@ -72,6 +79,8 @@ def load_track_map(path):
         'vs': vs,
         'normals_u': normals_u,
         'normals_v': normals_v,
+        'half_widths': half_widths,
+        'true_centerline': is_true,
         'num_points': len(points),
     }
 
@@ -309,15 +318,18 @@ def compute_track_position(track_map, world_pos, lap_distance):
     dv = car_v - best_proj_v
     lateral_offset = du * right_u + dv * right_v
 
+    # Per-point half_width (from true centerline maps) or global constant
+    hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
+
     # Clamp to 2x track width for display
-    max_offset = TRACK_HALF_WIDTH_M * 2.0
+    max_offset = hw * 2.0
     display_offset = max(-max_offset, min(max_offset, lateral_offset))
 
     # Final position = projection + right * display_offset
     pos_u = best_proj_u + right_u * display_offset
     pos_v = best_proj_v + right_v * display_offset
 
-    is_off_track = abs(lateral_offset) > TRACK_HALF_WIDTH_M
+    is_off_track = abs(lateral_offset) > hw
     return pos_u, pos_v, lateral_offset, is_off_track
 
 
@@ -704,7 +716,7 @@ class TrackMapApp:
         vs = self.track_map['vs']
         nus = self.track_map['normals_u']
         nvs = self.track_map['normals_v']
-        hw = TRACK_HALF_WIDTH_M
+        hws = self.track_map['half_widths']
 
         n = len(us)
         step = max(1, n // 1000)
@@ -715,6 +727,7 @@ class TrackMapApp:
 
         for i in range(0, n, step):
             nu, nv = nus[i], nvs[i]
+            hw = hws[i]
             lu, lv = us[i] - nu * hw, vs[i] - nv * hw
             ru, rv = us[i] + nu * hw, vs[i] + nv * hw
 
@@ -728,8 +741,9 @@ class TrackMapApp:
 
         # Close the loops
         nu0, nv0 = nus[0], nvs[0]
+        hw0 = hws[0]
         for coords_list, sign in [(left_coords, -1), (right_coords, 1)]:
-            eu, ev = us[0] + sign * nu0 * hw, vs[0] + sign * nv0 * hw
+            eu, ev = us[0] + sign * nu0 * hw0, vs[0] + sign * nv0 * hw0
             ecx, ecy = self.transform.to_canvas(eu, ev)
             coords_list.extend([ecx, ecy])
         ccx, ccy = self.transform.to_canvas(us[0], vs[0])
