@@ -64,6 +64,20 @@ View a track map without live telemetry.
 python3 track_map_live.py track_N_map.json --preview
 ```
 
+### Debug Car Positioning
+Print lateral offsets per car to stderr (validates segment-based projection accuracy).
+```bash
+./track_map_gui.sh track_N_map.json --debug
+# or with replay:
+./replay.sh track_N_map.json telemetry.jsonl --debug
+```
+Expected output when cars are spread across track width:
+```
+[DEBUG] Player P1: +2.1m  world=(100.5,200.3)  proj=(98.4,200.1)
+[DEBUG]   Car P2: -1.4m  world=(150.0,250.0)  proj=(151.2,249.8)
+```
+If all values are ~0, the projection is broken.
+
 ## Race Replay
 
 ### Replay a Recorded Race

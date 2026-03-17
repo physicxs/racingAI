@@ -58,4 +58,5 @@ echo ""
 echo "Close the GUI window or press Ctrl+C to stop."
 echo ""
 
-mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" | tee "$RECORD_FILE" | python3 -u track_map_live.py "$MAP_FILE"
+EXTRA_ARGS="${@:2}"
+mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" | tee "$RECORD_FILE" | python3 -u track_map_live.py "$MAP_FILE" $EXTRA_ARGS

@@ -146,6 +146,7 @@ See [TESTING.md](TESTING.md) for complete testing instructions including:
 - [x] **Phase 10:** Live Dashboard & Save to File
 - [x] **Phase 11:** Track Map Generation
 - [x] **Phase 12:** Racecraft AI Telemetry (orientation, DRS/ERS, tyre data, damage, flags, stats panel)
+- [x] **Phase 13:** Accurate Car Positioning (segment-based projection, true lateral offset, debug validation)
 
 ## Output Format
 

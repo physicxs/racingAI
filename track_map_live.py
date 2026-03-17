@@ -216,7 +216,14 @@ def project_world_to_2d(track_map, world_pos):
 
 
 def compute_track_position(track_map, world_pos, lap_distance):
-    """Compute car's 2D position using world coordinates and lateral offset.
+    """Compute car's 2D position using segment-based projection.
+
+    Uses proper nearest-segment projection for accurate lateral offset,
+    rather than just using the lapDistance centerline point.
+
+    For each nearby centerline segment, projects the car onto it and selects
+    the segment with minimum perpendicular distance. Then computes a local
+    track basis (forward/right) and true lateral offset.
 
     Returns (u, v, lateral_offset, is_off_track).
     Falls back to centerline position if world_pos is unavailable.
@@ -227,19 +234,88 @@ def compute_track_position(track_map, world_pos, lap_distance):
         return cu, cv, 0.0, False
 
     car_u, car_v = projected
-    nu, nv = lookup_normal(track_map, lap_distance)
+    us = track_map['us']
+    vs = track_map['vs']
+    n = track_map['num_points']
+    track_len = track_map['track_length']
 
-    # Lateral offset = dot(car - centerline, normal)
-    du = car_u - cu
-    dv = car_v - cv
-    lateral_offset = du * nu + dv * nv
+    if n < 2:
+        return cu, cv, 0.0, False
+
+    # Search window around lapDistance for the nearest centerline segment
+    center_idx = int(lap_distance % track_len)
+    if center_idx >= n:
+        center_idx = n - 1
+    search_radius = 50  # ±50 segments (~50m at 1m spacing)
+
+    best_dist_sq = float('inf')
+    best_proj_u = cu
+    best_proj_v = cv
+    best_seg_idx = center_idx
+
+    for offset in range(-search_radius, search_radius + 1):
+        i = (center_idx + offset) % n
+        i_next = (i + 1) % n
+
+        # Segment vector: v = P[i+1] - P[i]
+        seg_u = us[i_next] - us[i]
+        seg_v = vs[i_next] - vs[i]
+        seg_len_sq = seg_u * seg_u + seg_v * seg_v
+
+        if seg_len_sq < 1e-12:
+            continue
+
+        # Project car onto segment: w = car - P[i], t = dot(w, v) / dot(v, v)
+        wu = car_u - us[i]
+        wv = car_v - vs[i]
+        t = (wu * seg_u + wv * seg_v) / seg_len_sq
+        t = max(0.0, min(1.0, t))
+
+        # Projection point on segment
+        proj_u = us[i] + seg_u * t
+        proj_v = vs[i] + seg_v * t
+
+        # Distance from car to projection
+        du = car_u - proj_u
+        dv = car_v - proj_v
+        dist_sq = du * du + dv * dv
+
+        if dist_sq < best_dist_sq:
+            best_dist_sq = dist_sq
+            best_proj_u = proj_u
+            best_proj_v = proj_v
+            best_seg_idx = i
+
+    # Compute local track basis from best segment
+    i = best_seg_idx
+    i_next = (i + 1) % n
+    fwd_u = us[i_next] - us[i]
+    fwd_v = vs[i_next] - vs[i]
+    fwd_len = math.sqrt(fwd_u * fwd_u + fwd_v * fwd_v)
+
+    if fwd_len < 1e-9:
+        return cu, cv, 0.0, False
+
+    fwd_u /= fwd_len
+    fwd_v /= fwd_len
+
+    # Right vector = cross(forward, up) in 3D with Y-up, projected to X/Z plane
+    # Equivalent to 90° CW rotation in 2D: right = (-forward.v, forward.u)
+    right_u = -fwd_v
+    right_v = fwd_u
+
+    # True lateral offset = dot(car - projection, right)
+    du = car_u - best_proj_u
+    dv = car_v - best_proj_v
+    lateral_offset = du * right_u + dv * right_v
 
     # Clamp to 2x track width for display
     max_offset = TRACK_HALF_WIDTH_M * 2.0
     display_offset = max(-max_offset, min(max_offset, lateral_offset))
 
-    pos_u = cu + nu * display_offset
-    pos_v = cv + nv * display_offset
+    # Final position = projection + right * display_offset
+    pos_u = best_proj_u + right_u * display_offset
+    pos_v = best_proj_v + right_v * display_offset
 
     is_off_track = abs(lateral_offset) > TRACK_HALF_WIDTH_M
     return pos_u, pos_v, lateral_offset, is_off_track
@@ -471,10 +547,12 @@ class TrackMapApp:
     STATS_W = 300
     STATS_SEP_COLOR = '#444466'
 
-    def __init__(self, track_map, reader=None, replay_mode=False):
+    def __init__(self, track_map, reader=None, replay_mode=False, debug=False):
         self.track_map = track_map
         self.reader = reader if reader else TelemetryReader()
         self.replay_mode = replay_mode
+        self.debug = debug
+        self.debug_frame_count = 0
         self.follow_player = False
         self.needs_redraw = False
         self.drag_start = None
@@ -1087,13 +1165,14 @@ class TrackMapApp:
 
             # Update other cars
             all_cars = data.get('allCars', [])
+            debug_offsets = []
             for i in range(self.MAX_OTHER_CARS):
                 if i < len(all_cars):
                     car = all_cars[i]
                     car_dist = car.get('lapDistance', 0.0)
                     car_pos = car.get('position', 0)
                     car_world_pos = car.get('world_pos_m')
-                    cu, cv, _, car_off = compute_track_position(
+                    cu, cv, car_lat, car_off = compute_track_position(
                         self.track_map, car_world_pos, car_dist)
                     ccx, ccy = self.transform.to_canvas(cu, cv)
                     r = self.OTHER_CAR_RADIUS
@@ -1116,6 +1195,12 @@ class TrackMapApp:
                         self.canvas.itemconfig(
                             self.other_car_markers[i],
                             fill=self.OTHER_CAR_COLOR, outline='#66bbff')
+                    if self.debug and car_world_pos:
+                        debug_offsets.append(
+                            f"  Car P{car_pos}: {car_lat:+.1f}m"
+                            f"  world=({car_world_pos.get('x',0):.1f},"
+                            f"{car_world_pos.get('z',0):.1f})"
+                            f"  proj=({cu:.1f},{cv:.1f})")
                 else:
                     self.canvas.coords(
                         self.other_car_markers[i], -20, -20, -20, -20
@@ -1124,7 +1209,7 @@ class TrackMapApp:
                     self.canvas.itemconfig(self.other_car_labels[i], text='')
 
             # Player position (with lateral offset from world coords)
-            pu, pv, _, p_off = compute_track_position(
+            pu, pv, player_lat, p_off = compute_track_position(
                 self.track_map, player_world_pos, lap_dist)
             cx, cy = self.transform.to_canvas(pu, pv)
             r = self.CAR_RADIUS
@@ -1136,6 +1221,18 @@ class TrackMapApp:
                 self.canvas.itemconfig(self.car_marker,
                                        fill=self.CAR_COLOR, outline='#ff6666')
             self.canvas.tag_raise(self.car_marker)
+
+            # Debug validation: print lateral offsets every 30 frames (~3s)
+            if self.debug:
+                self.debug_frame_count += 1
+                if self.debug_frame_count % 30 == 1:
+                    wp = player_world_pos or {}
+                    print(f"[DEBUG] Player P{position}: {player_lat:+.1f}m"
+                          f"  world=({wp.get('x',0):.1f},{wp.get('z',0):.1f})"
+                          f"  proj=({pu:.1f},{pv:.1f})",
+                          file=sys.stderr, flush=True)
+                    for line in debug_offsets:
+                        print(f"[DEBUG]{line}", file=sys.stderr, flush=True)
 
             # HUD
             n_cars = len(all_cars) + 1
@@ -1276,6 +1373,7 @@ def get_track_name_safe(track_id):
 
 def main():
     preview = '--preview' in sys.argv
+    debug = '--debug' in sys.argv
     replay_file = None
 
     # Parse --replay <file>
@@ -1289,7 +1387,7 @@ def main():
             print("ERROR: --replay requires a JSONL file path")
             sys.exit(1)
 
-    args = [a for a in raw_args if a != '--preview']
+    args = [a for a in raw_args if a not in ('--preview', '--debug')]
 
     if not args:
         print("Usage: python3 track_map_live.py <track_map.json> [options]")
@@ -1297,6 +1395,7 @@ def main():
         print("Options:")
         print("  --preview              Show track map only (no live data)")
         print("  --replay <file.jsonl>  Replay a recorded telemetry file")
+        print("  --debug                Print lateral offsets per car to stderr")
         print()
         print("Controls:")
         print("  Scroll wheel    Zoom in/out (toward cursor)")
@@ -1336,17 +1435,17 @@ def main():
         dur = format_time(reader.total_duration_s())
         print(f"Replay: {reader.frame_count()} frames, {dur} duration")
         print("Controls: Space=Play/Pause | Left/Right=Skip | 1-4=Speed | Scroll=Zoom | Drag=Pan")
-        app = TrackMapApp(track_map, reader=reader, replay_mode=True)
+        app = TrackMapApp(track_map, reader=reader, replay_mode=True, debug=debug)
         app.run()
     elif preview:
         print("Opening preview... (close window to exit)")
         print("Controls: Scroll=Zoom | Drag=Pan | R=Reset | +/-=Zoom")
-        app = TrackMapApp(track_map)
+        app = TrackMapApp(track_map, debug=debug)
         app.run(preview_only=True)
     else:
         print("Starting GUI... (close window or Ctrl+C to stop)")
         print("Controls: Scroll=Zoom | Drag=Pan | R=Reset | F=Follow | +/-=Zoom")
-        app = TrackMapApp(track_map)
+        app = TrackMapApp(track_map, debug=debug)
         app.run()
 
 

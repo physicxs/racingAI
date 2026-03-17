@@ -45,4 +45,5 @@ if [ ! -f "$REPLAY_FILE" ]; then
     exit 1
 fi
 
-python3 track_map_live.py "$MAP_FILE" --replay "$REPLAY_FILE"
+EXTRA_ARGS="${@:3}"
+python3 track_map_live.py "$MAP_FILE" --replay "$REPLAY_FILE" $EXTRA_ARGS
