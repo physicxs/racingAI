@@ -36,12 +36,33 @@ import tkinter as tk
 # ─── Track Map Loading ────────────────────────────────────────────────────────
 
 def load_track_map(path):
-    """Load track map JSON file."""
+    """Load track map JSON file and precompute normal vectors."""
     with open(path) as f:
         data = json.load(f)
     points = data['points']
     us = [p['u'] for p in points]
     vs = [p['v'] for p in points]
+
+    # Precompute unit normal vectors (perpendicular to track direction)
+    n = len(us)
+    normals_u = [0.0] * n
+    normals_v = [0.0] * n
+    for i in range(n):
+        i_next = (i + 1) % n
+        du = us[i_next] - us[i]
+        dv = vs[i_next] - vs[i]
+        length = math.sqrt(du * du + dv * dv)
+        if length < 1e-9:
+            if i > 0:
+                normals_u[i] = normals_u[i - 1]
+                normals_v[i] = normals_v[i - 1]
+            continue
+        fu = du / length
+        fv = dv / length
+        # Right perpendicular: 90 degrees CW
+        normals_u[i] = -fv
+        normals_v[i] = fu
+
     return {
         'track_id': data.get('track_id'),
         'track_length': data.get('track_length_m', len(points)),
@@ -49,6 +70,8 @@ def load_track_map(path):
         'v_axis': data.get('coordinate_axes', {}).get('v', 'v'),
         'us': us,
         'vs': vs,
+        'normals_u': normals_u,
+        'normals_v': normals_v,
         'num_points': len(points),
     }
 
@@ -148,6 +171,78 @@ def lookup_position(track_map, lap_distance):
     u = track_map['us'][i] + t * (track_map['us'][i + 1] - track_map['us'][i])
     v = track_map['vs'][i] + t * (track_map['vs'][i + 1] - track_map['vs'][i])
     return u, v
+
+
+TRACK_HALF_WIDTH_M = 7.0  # F1 track is ~14m wide
+
+
+def lookup_normal(track_map, lap_distance):
+    """Look up interpolated normal vector (nu, nv) at lap distance."""
+    n = track_map['num_points']
+    if n == 0:
+        return 1.0, 0.0
+
+    s = lap_distance % track_map['track_length']
+    if s < 0:
+        s += track_map['track_length']
+
+    i = int(s)
+    if i >= n - 1:
+        return track_map['normals_u'][-1], track_map['normals_v'][-1]
+
+    t = s - i
+    nu = track_map['normals_u'][i] + t * (track_map['normals_u'][i + 1] - track_map['normals_u'][i])
+    nv = track_map['normals_v'][i] + t * (track_map['normals_v'][i + 1] - track_map['normals_v'][i])
+
+    # Re-normalize
+    length = math.sqrt(nu * nu + nv * nv)
+    if length > 1e-9:
+        nu /= length
+        nv /= length
+    return nu, nv
+
+
+def project_world_to_2d(track_map, world_pos):
+    """Project 3D world position to 2D track coords using coordinate_axes mapping."""
+    if not world_pos:
+        return None
+    u_axis = track_map.get('u_axis', 'x')
+    v_axis = track_map.get('v_axis', 'z')
+    u = world_pos.get(u_axis, 0.0)
+    v = world_pos.get(v_axis, 0.0)
+    if u == 0.0 and v == 0.0:
+        return None
+    return u, v
+
+
+def compute_track_position(track_map, world_pos, lap_distance):
+    """Compute car's 2D position using world coordinates and lateral offset.
+
+    Returns (u, v, lateral_offset, is_off_track).
+    Falls back to centerline position if world_pos is unavailable.
+    """
+    cu, cv = lookup_position(track_map, lap_distance)
+    projected = project_world_to_2d(track_map, world_pos)
+    if projected is None:
+        return cu, cv, 0.0, False
+
+    car_u, car_v = projected
+    nu, nv = lookup_normal(track_map, lap_distance)
+
+    # Lateral offset = dot(car - centerline, normal)
+    du = car_u - cu
+    dv = car_v - cv
+    lateral_offset = du * nu + dv * nv
+
+    # Clamp to 2x track width for display
+    max_offset = TRACK_HALF_WIDTH_M * 2.0
+    display_offset = max(-max_offset, min(max_offset, lateral_offset))
+
+    pos_u = cu + nu * display_offset
+    pos_v = cv + nv * display_offset
+
+    is_off_track = abs(lateral_offset) > TRACK_HALF_WIDTH_M
+    return pos_u, pos_v, lateral_offset, is_off_track
 
 
 # ─── Stdin Reader Thread ─────────────────────────────────────────────────────
@@ -526,32 +621,69 @@ class TrackMapApp:
         self._draw_stats(self.last_data)
 
     def _draw_track(self):
-        """Draw the track outline as a closed polyline."""
-        coords = []
+        """Draw the track as a filled ribbon with actual width."""
         us = self.track_map['us']
         vs = self.track_map['vs']
+        nus = self.track_map['normals_u']
+        nvs = self.track_map['normals_v']
+        hw = TRACK_HALF_WIDTH_M
 
-        step = max(1, len(us) // 2000)
-        for i in range(0, len(us), step):
-            cx, cy = self.transform.to_canvas(us[i], vs[i])
-            coords.extend([cx, cy])
+        n = len(us)
+        step = max(1, n // 1000)
 
-        # Close the loop
-        cx, cy = self.transform.to_canvas(us[0], vs[0])
-        coords.extend([cx, cy])
+        left_coords = []
+        right_coords = []
+        center_coords = []
 
-        if len(coords) >= 4:
-            # Scale track width with zoom
-            track_w = max(2, int(8 * min(self.transform.zoom, 3)))
-            center_w = max(1, int(2 * min(self.transform.zoom, 3)))
+        for i in range(0, n, step):
+            nu, nv = nus[i], nvs[i]
+            lu, lv = us[i] - nu * hw, vs[i] - nv * hw
+            ru, rv = us[i] + nu * hw, vs[i] + nv * hw
 
+            lcx, lcy = self.transform.to_canvas(lu, lv)
+            rcx, rcy = self.transform.to_canvas(ru, rv)
+            ccx, ccy = self.transform.to_canvas(us[i], vs[i])
+
+            left_coords.extend([lcx, lcy])
+            right_coords.extend([rcx, rcy])
+            center_coords.extend([ccx, ccy])
+
+        # Close the loops
+        nu0, nv0 = nus[0], nvs[0]
+        for coords_list, sign in [(left_coords, -1), (right_coords, 1)]:
+            eu, ev = us[0] + sign * nu0 * hw, vs[0] + sign * nv0 * hw
+            ecx, ecy = self.transform.to_canvas(eu, ev)
+            coords_list.extend([ecx, ecy])
+        ccx, ccy = self.transform.to_canvas(us[0], vs[0])
+        center_coords.extend([ccx, ccy])
+
+        if len(left_coords) >= 4 and len(right_coords) >= 4:
+            # Build polygon: left edge forward, then right edge reversed
+            flat_right_rev = []
+            for i in range(len(right_coords) - 2, -1, -2):
+                flat_right_rev.extend([right_coords[i], right_coords[i + 1]])
+            poly = left_coords + flat_right_rev
+
+            self.canvas.create_polygon(
+                *poly, fill='#2a2a4a', outline='', width=0
+            )
+
+            # Track edges
+            edge_w = max(1, int(1.5 * min(self.transform.zoom, 4)))
             self.canvas.create_line(
-                *coords, fill=self.TRACK_COLOR, width=track_w,
-                smooth=True, capstyle='round', joinstyle='round'
+                *left_coords, fill='#5a5a7a', width=edge_w,
+                smooth=True, capstyle='round'
             )
             self.canvas.create_line(
-                *coords, fill='#6a6a9a', width=center_w,
-                smooth=True
+                *right_coords, fill='#5a5a7a', width=edge_w,
+                smooth=True, capstyle='round'
+            )
+
+            # Centerline (dashed)
+            center_w = max(1, int(1 * min(self.transform.zoom, 3)))
+            self.canvas.create_line(
+                *center_coords, fill='#3a3a5a', width=center_w,
+                smooth=True, dash=(4, 8)
             )
 
         # Start/finish marker
@@ -939,9 +1071,13 @@ class TrackMapApp:
             throttle = player.get('throttle', 0.0)
             brake = player.get('brake', 0.0)
 
+            # Player world position for lateral offset
+            player_world_pos = player.get('world_pos_m')
+
             # Follow player if enabled
             if self.follow_player:
-                pu, pv = lookup_position(self.track_map, lap_dist)
+                pu, pv, _, _ = compute_track_position(
+                    self.track_map, player_world_pos, lap_dist)
                 self.transform.center_on(pu, pv)
                 self.needs_redraw = True
 
@@ -956,7 +1092,9 @@ class TrackMapApp:
                     car = all_cars[i]
                     car_dist = car.get('lapDistance', 0.0)
                     car_pos = car.get('position', 0)
-                    cu, cv = lookup_position(self.track_map, car_dist)
+                    car_world_pos = car.get('world_pos_m')
+                    cu, cv, _, car_off = compute_track_position(
+                        self.track_map, car_world_pos, car_dist)
                     ccx, ccy = self.transform.to_canvas(cu, cv)
                     r = self.OTHER_CAR_RADIUS
                     self.canvas.coords(
@@ -970,6 +1108,14 @@ class TrackMapApp:
                     self.canvas.itemconfig(
                         self.other_car_labels[i], text=f'P{car_pos}'
                     )
+                    if car_off:
+                        self.canvas.itemconfig(
+                            self.other_car_markers[i],
+                            fill='#ff9900', outline='#ffbb44')
+                    else:
+                        self.canvas.itemconfig(
+                            self.other_car_markers[i],
+                            fill=self.OTHER_CAR_COLOR, outline='#66bbff')
                 else:
                     self.canvas.coords(
                         self.other_car_markers[i], -20, -20, -20, -20
@@ -977,11 +1123,18 @@ class TrackMapApp:
                     self.canvas.coords(self.other_car_labels[i], -20, -20)
                     self.canvas.itemconfig(self.other_car_labels[i], text='')
 
-            # Player position
-            u, v = lookup_position(self.track_map, lap_dist)
-            cx, cy = self.transform.to_canvas(u, v)
+            # Player position (with lateral offset from world coords)
+            pu, pv, _, p_off = compute_track_position(
+                self.track_map, player_world_pos, lap_dist)
+            cx, cy = self.transform.to_canvas(pu, pv)
             r = self.CAR_RADIUS
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
+            if p_off:
+                self.canvas.itemconfig(self.car_marker,
+                                       fill='#ff9900', outline='#ffcc00')
+            else:
+                self.canvas.itemconfig(self.car_marker,
+                                       fill=self.CAR_COLOR, outline='#ff6666')
             self.canvas.tag_raise(self.car_marker)
 
             # HUD

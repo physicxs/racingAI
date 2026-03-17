@@ -20,6 +20,9 @@ public class RaceCarData {
     @JsonProperty("lapNumber")
     private int lapNumber;
 
+    @JsonProperty("world_pos_m")
+    private WorldPosition worldPosM;
+
     public RaceCarData() {
     }
 
@@ -28,6 +31,14 @@ public class RaceCarData {
         this.position = position;
         this.lapDistance = lapDistance;
         this.lapNumber = lapNumber;
+    }
+
+    public RaceCarData(int carIndex, int position, float lapDistance, int lapNumber, WorldPosition worldPosM) {
+        this.carIndex = carIndex;
+        this.position = position;
+        this.lapDistance = lapDistance;
+        this.lapNumber = lapNumber;
+        this.worldPosM = worldPosM;
     }
 
     public int getCarIndex() { return carIndex; }
@@ -41,4 +52,7 @@ public class RaceCarData {
 
     public int getLapNumber() { return lapNumber; }
     public void setLapNumber(int lapNumber) { this.lapNumber = lapNumber; }
+
+    public WorldPosition getWorldPosM() { return worldPosM; }
+    public void setWorldPosM(WorldPosition worldPosM) { this.worldPosM = worldPosM; }
 }

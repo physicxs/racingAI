@@ -42,10 +42,11 @@ The output file is auto-named `track_N_map.json` where N is the track ID (e.g. 0
 ```
 
 ### Live Track Map GUI
-Shows your car moving on the track in real time with a telemetry stats panel on the right (speed, tyres, DRS/ERS, G-force, damage, flags).
-Replace the filename with your track map.
+Shows your car moving on the track in real time with true track width rendering and a telemetry stats panel on the right (speed, tyres, DRS/ERS, G-force, damage, flags). Cars are positioned using world coordinates so you can see side-by-side battles, defensive lines, and off-track incidents.
+
+Automatically records telemetry to a timestamped file and prints the replay command at startup.
 ```bash
-./track_map_gui.sh track_5_map.json
+./track_map_gui.sh track_N_map.json
 ```
 
 **GUI Controls:**
@@ -60,7 +61,7 @@ Replace the filename with your track map.
 ### Preview Track Map (No Game)
 View a track map without live telemetry.
 ```bash
-python3 track_map_live.py track_5_map.json --preview
+python3 track_map_live.py track_N_map.json --preview
 ```
 
 ## Race Replay
@@ -68,7 +69,7 @@ python3 track_map_live.py track_5_map.json --preview
 ### Replay a Recorded Race
 Plays back a recorded session on the track map with full telemetry stats panel.
 ```bash
-./replay.sh track_5_map.json telemetry_20260315_105017.jsonl
+./replay.sh track_N_map.json telemetry_YYYYMMDD_105017.jsonl
 ```
 
 **Replay Controls:**
@@ -126,7 +127,7 @@ mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp"
 # Pipe to any Python tool
 mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" 2>&1 | python3 live_monitor.py
 mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" 2>&1 | python3 record_telemetry.py
-mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" 2>&1 | python3 track_map_live.py track_5_map.json
+mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" | python3 -u track_map_live.py track_5_map.json
 
 # Run the UDP packet simulator (for testing without the game)
 mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.UDPPacketSender"

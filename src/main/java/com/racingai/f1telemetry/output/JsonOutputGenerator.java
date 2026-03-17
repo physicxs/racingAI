@@ -226,7 +226,12 @@ public class JsonOutputGenerator {
                 car.getCarIndex(),
                 car.getCarPosition(),
                 car.getLapDistance(),
-                car.getCurrentLapNum()
+                car.getCurrentLapNum(),
+                new WorldPosition(
+                    car.getWorldPositionX(),
+                    car.getWorldPositionY(),
+                    car.getWorldPositionZ()
+                )
             ));
         }
 

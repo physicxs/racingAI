@@ -53,8 +53,9 @@ public class JsonOutputGeneratorTest {
         playerCar.updateDamage(new float[]{10.5f, 11.2f, 8.3f, 9.1f}, 0.0f, 0.0f, 0.0f,
                                 (short) 0, (short) 0, (short) 0, new short[]{0, 0, 0, 0});
 
-        // Add another car nearby
+        // Add another car nearby (with world position for track width rendering)
         CarState otherCar = sessionState.getCar(1);
+        otherCar.updateMotion(150.0f, 6.0f, 250.0f, 45.0f, 0.0f, 65.0f, 0.3f, 0.8f, -0.1f, 0.05f, 0.01f, 0.0f);
         otherCar.updateLapData(89000L, 30000L, 1400.0f, 4900.0f,
                               (short) 4, (short) 3, (short) 4, (short) 4, 9.0);
 
@@ -118,6 +119,18 @@ public class JsonOutputGeneratorTest {
         assertEquals(4, nearbyCarData.get("position").intValue());
         // Gap should be negative (car is ahead)
         assertTrue(nearbyCarData.get("gap").doubleValue() < 0, "Car ahead should have negative gap");
+
+        // Verify allCars includes world_pos_m
+        JsonNode allCarsNode = root.get("allCars");
+        assertNotNull(allCarsNode, "Should have allCars");
+        assertTrue(allCarsNode.isArray(), "allCars should be an array");
+        assertTrue(allCarsNode.size() > 0, "allCars should have entries");
+        JsonNode otherCarNode = allCarsNode.get(0);
+        JsonNode otherWorldPos = otherCarNode.get("world_pos_m");
+        assertNotNull(otherWorldPos, "allCars entry should have world_pos_m");
+        assertEquals(150.0f, otherWorldPos.get("x").floatValue(), 0.01f);
+        assertEquals(6.0f, otherWorldPos.get("y").floatValue(), 0.01f);
+        assertEquals(250.0f, otherWorldPos.get("z").floatValue(), 0.01f);
     }
 
     @Test
