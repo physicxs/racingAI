@@ -8,6 +8,42 @@ All commands are run from the project root directory.
 - Python 3 (for GUI and recording scripts)
 - F1 2025 with UDP telemetry enabled (Settings > Telemetry > UDP Telemetry: ON, Port: 20777, Rate: 30 Hz)
 
+## How to Build a Track Map
+
+### Step 1: Record telemetry
+Start a race or time trial in F1 2025, then run:
+```bash
+./record.sh
+```
+Drive 3-5 laps varying your line (some laps left, some right, some normal). Press **Ctrl+C** to stop. This saves a timestamped file like `telemetry_20260317_133507.jsonl`.
+
+To cancel without saving, press Ctrl+C then delete the file:
+```bash
+rm telemetry_20260317_133507.jsonl
+```
+
+### Step 2: Build the track map
+```bash
+./build_true_centerline.sh telemetry_20260317_133507.jsonl
+```
+This outputs `track_N_true_map.json` (e.g. `track_0_true_map.json` for Melbourne).
+
+To combine multiple recordings:
+```bash
+./build_true_centerline.sh left_laps.jsonl right_laps.jsonl normal.jsonl
+```
+
+### Step 3: Use the track map
+Watch live with the GUI (also auto-records telemetry for replay):
+```bash
+./track_map_gui.sh track_0_true_map.json
+```
+
+Or replay a previous session:
+```bash
+./replay.sh track_0_true_map.json telemetry_20260317_133507.jsonl
+```
+
 ## Live Monitoring
 
 ### Live Dashboard
@@ -22,47 +58,11 @@ Minimal monitor showing only steering, throttle, brake, gear, and speed.
 ./test_inputs.sh
 ```
 
-## Recording
+## Track Map GUI
 
-### Record a Session
-Saves telemetry to a timestamped JSONL file (`telemetry_YYYYMMDD_HHMMSS.jsonl`). Press Ctrl+C to stop.
-```bash
-./record.sh
-```
+Shows your car moving on the track in real time with true track width rendering and a telemetry stats panel (speed, tyres, DRS/ERS, G-force, damage, flags). Cars are positioned using world coordinates so you can see side-by-side battles, defensive lines, and off-track incidents.
 
-## Track Map
-
-### Build a Track Map
-Generates a 2D track map JSON from a recorded JSONL file. Needs at least one full lap of data.
-The output file is auto-named `track_N_map.json` where N is the track ID (e.g. 0=Melbourne, 5=Monaco, 7=Silverstone).
-```bash
-./build_map.sh telemetry_20260315_105017.jsonl
-# or with custom output name:
-./build_map.sh telemetry_20260315_105017.jsonl monaco_map.json
-```
-
-### Build a True Centerline Map
-Computes a true geometric centerline from track edges by analyzing multiple laps with varied lateral positions. Produces an unbiased centerline (midpoint between edges) with per-point track width, instead of using the racing line as the centerline.
-
-For best results, record 3-5 laps varying your line (stay left, stay right, normal racing line).
-```bash
-./build_true_centerline.sh telemetry_race1.jsonl
-# or combine multiple recordings:
-./build_true_centerline.sh left_laps.jsonl right_laps.jsonl normal.jsonl
-# custom output name:
-./build_true_centerline.sh race.jsonl -o monaco_true_map.json
-```
-The output file is auto-named `track_N_true_map.json`. Use it the same way as a regular track map.
-
-### Live Track Map GUI
-Shows your car moving on the track in real time with true track width rendering and a telemetry stats panel on the right (speed, tyres, DRS/ERS, G-force, damage, flags). Cars are positioned using world coordinates so you can see side-by-side battles, defensive lines, and off-track incidents.
-
-Automatically records telemetry to a timestamped file and prints the replay command at startup.
-```bash
-./track_map_gui.sh track_N_map.json
-```
-
-**GUI Controls:**
+**Controls:**
 | Key | Action |
 |-----|--------|
 | Scroll wheel | Zoom in/out (toward cursor) |
@@ -72,34 +72,25 @@ Automatically records telemetry to a timestamped file and prints the replay comm
 | `F` | Follow player car (toggle) |
 
 ### Preview Track Map (No Game)
-View a track map without live telemetry.
 ```bash
-python3 track_map_live.py track_N_map.json --preview
+python3 track_map_live.py track_0_true_map.json --preview
 ```
 
 ### Debug Car Positioning
-Print lateral offsets per car to stderr (validates segment-based projection accuracy).
+Print lateral offsets per car to stderr:
 ```bash
-./track_map_gui.sh track_N_map.json --debug
-# or with replay:
-./replay.sh track_N_map.json telemetry.jsonl --debug
+./track_map_gui.sh track_0_true_map.json --debug
+./replay.sh track_0_true_map.json telemetry.jsonl --debug
 ```
-Expected output when cars are spread across track width:
-```
-[DEBUG] Player P1: +2.1m  world=(100.5,200.3)  proj=(98.4,200.1)
-[DEBUG]   Car P2: -1.4m  world=(150.0,250.0)  proj=(151.2,249.8)
-```
-If all values are ~0, the projection is broken.
 
 ## Race Replay
 
-### Replay a Recorded Race
 Plays back a recorded session on the track map with full telemetry stats panel.
 ```bash
-./replay.sh track_N_map.json telemetry_YYYYMMDD_105017.jsonl
+./replay.sh track_0_true_map.json telemetry_20260317_133507.jsonl
 ```
 
-**Replay Controls:**
+**Controls:**
 | Key | Action |
 |-----|--------|
 | `Space` | Play / pause |
@@ -110,33 +101,13 @@ Plays back a recorded session on the track map with full telemetry stats panel.
 
 ## Testing (No Game Required)
 
-These scripts use a built-in UDP packet simulator so you can test without the F1 game.
+These scripts use a built-in UDP packet simulator.
 
-### Test Live Monitor
 ```bash
-./monitor_test.sh
-```
-
-### Test Input Monitor
-```bash
-./test_with_simulator.sh
-```
-
-### Test Recording (30 seconds)
-```bash
-./record_test.sh
-```
-
-### Test Track Map Builder
-Records 60 seconds of simulated data, then builds a track map.
-```bash
-./build_map_test.sh
-```
-
-### Test Track Map GUI
-Generates a test map if needed, then shows the GUI with a simulated moving car.
-```bash
-./track_map_gui_test.sh
+./monitor_test.sh          # Test live monitor
+./test_with_simulator.sh   # Test input monitor
+./record_test.sh           # Test recording (30 seconds)
+./track_map_gui_test.sh    # Test track map GUI
 ```
 
 ## Building and Running Manually
@@ -154,26 +125,10 @@ mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp"
 # Pipe to any Python tool
 mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" 2>&1 | python3 live_monitor.py
 mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" 2>&1 | python3 record_telemetry.py
-mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" | python3 -u track_map_live.py track_5_map.json
+mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" | python3 -u track_map_live.py track_0_true_map.json
 
 # Run the UDP packet simulator (for testing without the game)
 mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.UDPPacketSender"
-```
-
-## Typical Workflow
-
-```
-1. Start F1 2025, enable UDP telemetry
-2. Record a race:           ./record.sh
-3. Build track map:         ./build_map.sh telemetry_*.jsonl
-4. Watch live with map:     ./track_map_gui.sh track_*_map.json
-5. Replay after the race:   ./replay.sh track_*_map.json telemetry_*.jsonl
-```
-
-For a more accurate track map (true centerline instead of racing line):
-```
-3b. Record 3-5 laps with varied lines (left, right, normal)
-3c. Build true centerline:  ./build_true_centerline.sh telemetry_*.jsonl
 ```
 
 ## Configuration

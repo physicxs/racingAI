@@ -2,7 +2,7 @@
 
 A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry data.
 
-**Status:** ✅ Complete | All 12 development phases finished | 21 unit tests passing
+**Status:** ✅ Complete | All 15 development phases finished | 21 unit tests passing
 
 ## Quick Start
 
@@ -18,7 +18,7 @@ A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry 
 
 **🗺️ Build Track Map** - Generate 2D track map from recorded laps:
 ```bash
-./build_map.sh <telemetry.jsonl>
+./build_true_centerline.sh <telemetry.jsonl>
 ```
 
 **📍 Live Track Map GUI** - Real-time car position on track:
@@ -148,6 +148,7 @@ See [TESTING.md](TESTING.md) for complete testing instructions including:
 - [x] **Phase 12:** Racecraft AI Telemetry (orientation, DRS/ERS, tyre data, damage, flags, stats panel)
 - [x] **Phase 13:** Accurate Car Positioning (segment-based projection, true lateral offset, debug validation)
 - [x] **Phase 14:** True Track Centerline (edge detection from multi-lap data, per-point variable track width)
+- [x] **Phase 15:** Edge Noise Cleanup (speed filter, 2-sigma outlier removal, weighted percentiles, edge smoothing, width clamping)
 
 ## Output Format
 

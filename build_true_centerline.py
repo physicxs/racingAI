@@ -20,6 +20,10 @@ import json
 import sys
 import math
 
+MIN_SPEED_KMH = 80  # Discard samples below this speed (reduces noise from pit/crash/slow zones)
+EDGE_SHRINK_FACTOR = 0.9  # Shrink edges to remove runoff noise
+MAX_WIDTH_DELTA_M = 0.5  # Max half_width change per meter (anti-spike clamping)
+
 
 # ─── Phase 1: Load Samples ──────────────────────────────────────────────────
 
@@ -58,14 +62,19 @@ def load_all_samples(jsonl_paths):
                 if meta.get('track_id') is not None:
                     track_id = meta.get('track_id')
 
+                speed = player.get('speed', 0)
+                if speed < MIN_SPEED_KMH:
+                    continue
+
                 all_samples.append({
                     'lap': player.get('lapNumber', 0),
                     'dist': player.get('lapDistance', 0.0),
                     'x': x, 'y': y, 'z': z,
+                    'speed': speed,
                     'source': path,
                 })
                 file_samples += 1
-        print(f"  {path}: {file_samples} samples")
+        print(f"  {path}: {file_samples} samples (after speed filter >= {MIN_SPEED_KMH} km/h)")
 
     return all_samples, track_length, track_id
 
@@ -199,7 +208,7 @@ def compute_lateral_offsets(samples, ref_u, ref_v, normals_u, normals_v,
     """
     n = len(ref_u)
     search_radius = 50
-    offsets_by_bin = {i: [] for i in range(n)}
+    offsets_by_bin = {i: [] for i in range(n)}  # bin -> [(lateral, weight), ...]
 
     for s in samples:
         car_u = s[u_key]
@@ -251,7 +260,9 @@ def compute_lateral_offsets(samples, ref_u, ref_v, normals_u, normals_v,
         dv = car_v - best_proj_v
         lateral = du * nu + dv * nv
 
-        offsets_by_bin[best_seg_idx].append(lateral)
+        # Weight by speed (higher speed = more reliable sample)
+        weight = s.get('speed', 100)
+        offsets_by_bin[best_seg_idx].append((lateral, weight))
 
     return offsets_by_bin
 
@@ -273,9 +284,51 @@ def percentile(sorted_values, p):
 DEFAULT_HALF_WIDTH = 7.0  # fallback for bins with too few samples
 
 
-def detect_edges(offsets_by_bin, n_bins):
-    """Compute left/right edges per bin using robust percentiles.
+def remove_outliers_weighted(lateral_weight_pairs, sigma=2.0):
+    """Remove samples more than sigma std devs from the weighted mean.
 
+    Input: list of (lateral, weight) tuples.
+    Returns: filtered list of (lateral, weight) tuples.
+    """
+    if len(lateral_weight_pairs) < 3:
+        return lateral_weight_pairs
+    total_w = sum(w for _, w in lateral_weight_pairs)
+    if total_w < 1e-9:
+        return lateral_weight_pairs
+    mean = sum(v * w for v, w in lateral_weight_pairs) / total_w
+    variance = sum(w * (v - mean) ** 2 for v, w in lateral_weight_pairs) / total_w
+    std = math.sqrt(variance)
+    if std < 0.01:
+        return lateral_weight_pairs
+    return [(v, w) for v, w in lateral_weight_pairs if abs(v - mean) < sigma * std]
+
+
+def weighted_percentile(sorted_pairs, p):
+    """Compute weighted p-th percentile from (value, weight) pairs sorted by value.
+
+    p is 0-100.
+    """
+    if not sorted_pairs:
+        return 0.0
+    if len(sorted_pairs) == 1:
+        return sorted_pairs[0][0]
+
+    total_w = sum(w for _, w in sorted_pairs)
+    target = total_w * p / 100.0
+    cumulative = 0.0
+    for i, (val, w) in enumerate(sorted_pairs):
+        cumulative += w
+        if cumulative >= target:
+            return val
+    return sorted_pairs[-1][0]
+
+
+def detect_edges(offsets_by_bin, n_bins):
+    """Compute left/right edges per bin using outlier removal + weighted percentiles.
+
+    Pipeline per bin:
+      1. Remove outliers (2-sigma, weighted)
+      2. Weighted percentile clipping (15th/85th)
     Returns (left_edges, right_edges) arrays.
     """
     left_edges = [0.0] * n_bins
@@ -283,20 +336,29 @@ def detect_edges(offsets_by_bin, n_bins):
     good_bins = 0
 
     for i in range(n_bins):
-        vals = sorted(offsets_by_bin.get(i, []))
-        if len(vals) < 5:
-            # Not enough data, use default
+        raw_pairs = offsets_by_bin.get(i, [])
+        if len(raw_pairs) < 5:
             left_edges[i] = -DEFAULT_HALF_WIDTH
             right_edges[i] = DEFAULT_HALF_WIDTH
             continue
 
-        left_edges[i] = percentile(vals, 5)
-        right_edges[i] = percentile(vals, 95)
+        # Step 1: Remove outliers (2-sigma, weighted)
+        cleaned = remove_outliers_weighted(raw_pairs, sigma=2.0)
+        if len(cleaned) < 3:
+            left_edges[i] = -DEFAULT_HALF_WIDTH
+            right_edges[i] = DEFAULT_HALF_WIDTH
+            continue
+
+        # Sort by lateral value for percentile calculation
+        sorted_pairs = sorted(cleaned, key=lambda x: x[0])
+
+        # Step 2: Weighted percentile clipping (15th/85th)
+        left_edges[i] = weighted_percentile(sorted_pairs, 15)
+        right_edges[i] = weighted_percentile(sorted_pairs, 85)
         good_bins += 1
 
         # Sanity: ensure edges are separated
         if right_edges[i] - left_edges[i] < 4.0:
-            # Track must be at least 4m wide
             mid = (left_edges[i] + right_edges[i]) / 2.0
             left_edges[i] = mid - DEFAULT_HALF_WIDTH
             right_edges[i] = mid + DEFAULT_HALF_WIDTH
@@ -518,20 +580,39 @@ def main():
     total_offsets = sum(len(v) for v in offsets_by_bin.values())
     print(f"  Total offset measurements: {total_offsets}")
 
-    # Phase 5: Edge detection (percentile-based)
-    print("\nDetecting track edges (5th/95th percentile)...")
+    # Phase 5: Edge detection (outlier removal + 15th/85th percentile)
+    print("\nDetecting track edges (2-sigma outlier removal + 15th/85th percentile)...")
     left_edges, right_edges = detect_edges(offsets_by_bin, n_points)
 
-    # Phase 6: True centerline
+    # Phase 5b: Smooth edges BEFORE computing centerline (critical for clean edges)
+    print("Smoothing edges (window=15)...")
+    left_edges = smooth_values(left_edges, window=15)
+    right_edges = smooth_values(right_edges, window=15)
+
+    # Phase 6: True centerline from smoothed edges
     print("\nComputing true centerline...")
     center_u, center_v, half_widths = compute_true_centerline(
         ref_u, ref_v, normals_u, normals_v, left_edges, right_edges)
 
-    # Phase 7: Smooth
-    print("Smoothing centerline and width (window=10)...")
+    # Phase 6b: Clamp width changes (max 0.5m per step, anti-spike)
+    print("Clamping width changes (max delta = {:.1f}m/step)...".format(MAX_WIDTH_DELTA_M))
+    for i in range(1, len(half_widths)):
+        delta = half_widths[i] - half_widths[i - 1]
+        if abs(delta) > MAX_WIDTH_DELTA_M:
+            half_widths[i] = half_widths[i - 1] + math.copysign(MAX_WIDTH_DELTA_M, delta)
+    # Wrap: clamp last->first transition
+    delta = half_widths[0] - half_widths[-1]
+    if abs(delta) > MAX_WIDTH_DELTA_M:
+        half_widths[0] = half_widths[-1] + math.copysign(MAX_WIDTH_DELTA_M, delta)
+
+    # Phase 6c: Edge shrink (remove runoff noise)
+    print(f"Shrinking edges (factor={EDGE_SHRINK_FACTOR})...")
+    half_widths = [hw * EDGE_SHRINK_FACTOR for hw in half_widths]
+
+    # Phase 7: Smooth centerline
+    print("Smoothing centerline (window=10)...")
     center_u = smooth_values(center_u, window=10)
     center_v = smooth_values(center_v, window=10)
-    half_widths = smooth_values(half_widths, window=10)
 
     # Close the loop
     center_u, center_v = close_loop(center_u, center_v)
