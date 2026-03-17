@@ -30,8 +30,10 @@ if [ ! -f "$MAP_FILE" ]; then
     exit 1
 fi
 
-# Kill any existing receiver
-pkill -f "f1telemetry.F1TelemetryApp" 2>/dev/null
+# Kill any existing receiver holding port 20777
+pkill -9 -f "f1telemetry.F1TelemetryApp" 2>/dev/null
+# Also kill by port in case pkill missed it
+lsof -t -i :20777 2>/dev/null | xargs kill -9 2>/dev/null
 sleep 1
 
 echo "F1 2025 Live Track Map"
@@ -49,4 +51,4 @@ echo "Starting receiver and GUI..."
 echo "Close the GUI window or press Ctrl+C to stop."
 echo ""
 
-mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" 2>&1 | python3 track_map_live.py "$MAP_FILE"
+mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" | python3 -u track_map_live.py "$MAP_FILE"

@@ -36,7 +36,7 @@ A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry 
 ./test_inputs.sh
 ```
 
-See [QUICK_START.md](QUICK_START.md) for detailed setup and usage. See [TRACK_MAP_GUIDE.md](TRACK_MAP_GUIDE.md) for track map generation.
+See [QUICK_START.md](QUICK_START.md) for detailed setup and usage. See [TRACK_MAP_GUIDE.md](TRACK_MAP_GUIDE.md) for track map generation. See [DERIVED_BATTLE_METRICS.md](DERIVED_BATTLE_METRICS.md) for racecraft AI battle metrics specification.
 
 ## Overview
 

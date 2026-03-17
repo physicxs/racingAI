@@ -60,7 +60,7 @@ SENDER_PID=$!
 sleep 2
 
 # Start receiver piped to GUI
-mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" 2>&1 | python3 track_map_live.py "$MAP_FILE"
+mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" | python3 -u track_map_live.py "$MAP_FILE"
 
 # Clean up
 kill $SENDER_PID 2>/dev/null

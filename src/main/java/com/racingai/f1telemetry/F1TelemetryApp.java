@@ -123,6 +123,7 @@ public class F1TelemetryApp {
                 String json = jsonOutputGenerator.generateSnapshot(stateManager.getSessionState());
                 if (json != null) {
                     System.out.println(json);
+                    System.out.flush();
                 }
             }, 0, periodMs, TimeUnit.MILLISECONDS);
 

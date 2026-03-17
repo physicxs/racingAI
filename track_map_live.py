@@ -26,6 +26,7 @@ Usage:
 
 import json
 import sys
+import os
 import math
 import time
 import threading
@@ -164,20 +165,42 @@ class TelemetryReader:
         thread.start()
 
     def _read_loop(self):
+        # Reopen stdin with line buffering (Python uses 8KB block buffer on pipes)
         try:
-            for line in sys.stdin:
-                if not self.running:
+            stdin_fd = sys.stdin.fileno()
+            line_stdin = os.fdopen(stdin_fd, 'r', buffering=1, closefd=False)
+        except Exception:
+            line_stdin = sys.stdin
+
+        json_count = 0
+        line_count = 0
+        print("[track_map] Reader thread started, waiting for telemetry...",
+              file=sys.stderr, flush=True)
+        try:
+            while self.running:
+                line = line_stdin.readline()
+                if not line:
                     break
+                line_count += 1
                 if not line.startswith('{'):
+                    # Forward non-JSON lines to stderr (Java log messages)
+                    sys.stderr.write(line)
+                    sys.stderr.flush()
                     continue
                 try:
                     data = json.loads(line.strip())
+                    json_count += 1
+                    if json_count == 1:
+                        print("[track_map] First telemetry frame received!",
+                              file=sys.stderr, flush=True)
                     with self.lock:
                         self.latest = data
                 except json.JSONDecodeError:
                     pass
         except (KeyboardInterrupt, IOError):
             pass
+        print(f"[track_map] Reader stopped. Lines: {line_count}, JSON frames: {json_count}",
+              file=sys.stderr, flush=True)
 
     def get_latest(self):
         with self.lock:
