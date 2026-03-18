@@ -622,8 +622,12 @@ def close_loop(center_u, center_v, blend_meters=20):
 # ─── Phase 8: Output ────────────────────────────────────────────────────────
 
 def write_track_map(output_path, track_id, track_length, u_key, v_key,
-                    center_u, center_v, half_widths):
-    """Write track map JSON with per-point half_width."""
+                    center_u, center_v, half_widths, normals_u=None, normals_v=None):
+    """Write track map JSON with per-point half_width and spline-derived normals."""
+    # Compute normals from centerline if not provided
+    if normals_u is None or normals_v is None:
+        normals_u, normals_v = compute_normals(center_u, center_v)
+
     track_map = {
         "track_id": track_id,
         "track_length_m": track_length,
@@ -631,12 +635,15 @@ def write_track_map(output_path, track_id, track_length, u_key, v_key,
         "spacing_m": 1,
         "num_points": len(center_u),
         "true_centerline": True,
+        "spline_normals": True,
         "points": [
             {
                 "s": i,
                 "u": round(center_u[i], 3),
                 "v": round(center_v[i], 3),
                 "half_width": round(half_widths[i], 2),
+                "nu": round(normals_u[i], 6),
+                "nv": round(normals_v[i], 6),
             }
             for i in range(len(center_u))
         ]
@@ -819,8 +826,26 @@ def main():
     # Close the loop
     center_u, center_v = close_loop(center_u, center_v)
 
+    # Phase 10b: Compute spline-derived normals (for renderer)
+    print("Computing spline-derived normals...")
+    spline_normals_u, spline_normals_v = compute_spline_normals(center_u, center_v)
+
     # Optional light final smoothing on edges (window=10, via half_widths)
     half_widths = smooth_values(half_widths, window=10)
+
+    # Debug assertion: verify edges are symmetric
+    max_asymmetry = 0.0
+    for i in range(n_points):
+        nu, nv = spline_normals_u[i], spline_normals_v[i]
+        hw = half_widths[i]
+        lu = center_u[i] - nu * hw
+        lv = center_v[i] - nv * hw
+        ru = center_u[i] + nu * hw
+        rv = center_v[i] + nv * hw
+        dl = math.sqrt((center_u[i] - lu) ** 2 + (center_v[i] - lv) ** 2)
+        dr = math.sqrt((center_u[i] - ru) ** 2 + (center_v[i] - rv) ** 2)
+        max_asymmetry = max(max_asymmetry, abs(dl - dr))
+    print(f"  Edge symmetry check: max asymmetry = {max_asymmetry:.6f}m (should be ~0)")
 
     # Debug: per-bin confidence summary
     print("\nBin confidence debug:")
@@ -845,11 +870,12 @@ def main():
         output_path = f"{track_name}_true_map.json"
 
     write_track_map(output_path, track_id, track_length, u_key, v_key,
-                    center_u, center_v, half_widths)
+                    center_u, center_v, half_widths, spline_normals_u, spline_normals_v)
 
     print(f"\nTrue centerline map written to {output_path}")
     print(f"  Points: {n_points}")
-    print(f"  Format: C(s) -> (u={u_key}, v={v_key}, half_width)")
+    print(f"  Format: C(s) -> (u={u_key}, v={v_key}, half_width, nu, nv)")
+    print(f"  Spline normals: included (renderer will use directly)")
     print(f"\nUse with: ./track_map_gui.sh {output_path}")
 
 

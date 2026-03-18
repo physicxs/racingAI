@@ -46,29 +46,36 @@ def load_track_map(path):
     # Per-point half_width (from true centerline maps), fallback to constant
     half_widths = [p.get('half_width', TRACK_HALF_WIDTH_M) for p in points]
 
-    # Precompute unit normal vectors (perpendicular to track direction)
+    # Use spline-derived normals if available (from builder), otherwise compute
+    has_spline_normals = data.get('spline_normals', False) and 'nu' in points[0]
     n = len(us)
-    normals_u = [0.0] * n
-    normals_v = [0.0] * n
-    for i in range(n):
-        i_next = (i + 1) % n
-        du = us[i_next] - us[i]
-        dv = vs[i_next] - vs[i]
-        length = math.sqrt(du * du + dv * dv)
-        if length < 1e-9:
-            if i > 0:
-                normals_u[i] = normals_u[i - 1]
-                normals_v[i] = normals_v[i - 1]
-            continue
-        fu = du / length
-        fv = dv / length
-        # Right perpendicular: 90 degrees CW
-        normals_u[i] = -fv
-        normals_v[i] = fu
+
+    if has_spline_normals:
+        normals_u = [p['nu'] for p in points]
+        normals_v = [p['nv'] for p in points]
+    else:
+        # Fallback: compute normals from centerline points
+        normals_u = [0.0] * n
+        normals_v = [0.0] * n
+        for i in range(n):
+            i_next = (i + 1) % n
+            du = us[i_next] - us[i]
+            dv = vs[i_next] - vs[i]
+            length = math.sqrt(du * du + dv * dv)
+            if length < 1e-9:
+                if i > 0:
+                    normals_u[i] = normals_u[i - 1]
+                    normals_v[i] = normals_v[i - 1]
+                continue
+            fu = du / length
+            fv = dv / length
+            normals_u[i] = -fv
+            normals_v[i] = fu
 
     is_true = data.get('true_centerline', False)
     if is_true:
-        print(f"[track_map] True centerline map loaded (per-point track width)")
+        src = "spline-derived" if has_spline_normals else "computed"
+        print(f"[track_map] True centerline map loaded (per-point width, {src} normals)")
 
     return {
         'track_id': data.get('track_id'),
