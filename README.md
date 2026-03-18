@@ -2,7 +2,7 @@
 
 A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry data.
 
-**Status:** ✅ Complete | All 16 development phases finished | 21 unit tests passing
+**Status:** ✅ Complete | All 17 development phases finished | 21 unit tests passing
 
 ## Quick Start
 
@@ -150,6 +150,7 @@ See [TESTING.md](TESTING.md) for complete testing instructions including:
 - [x] **Phase 14:** True Track Centerline (edge detection from multi-lap data, per-point variable track width)
 - [x] **Phase 15:** Edge Noise Cleanup (speed filter, 2-sigma outlier removal, weighted percentiles, edge smoothing, width clamping)
 - [x] **Phase 16:** Adaptive Edge Reconstruction (per-bin confidence tiers, low-confidence interpolation, corrected pipeline ordering)
+- [x] **Phase 17:** Spline-Based Track Model (Catmull-Rom spline centerline, geometry-driven edges, separated width smoothing)
 
 ## Output Format
 

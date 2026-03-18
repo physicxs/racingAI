@@ -505,6 +505,100 @@ def smooth_values(values, window=10):
     return smoothed
 
 
+# ─── Phase 7b: Catmull-Rom Spline ──────────────────────────────────────────
+
+def catmull_rom_segment(p0, p1, p2, p3, num_samples):
+    """Evaluate Catmull-Rom spline between p1 and p2.
+
+    Returns num_samples (u, v) points evenly spaced in parameter t [0, 1).
+    """
+    points_u = []
+    points_v = []
+    for s in range(num_samples):
+        t = s / num_samples
+        t2 = t * t
+        t3 = t2 * t
+
+        u = 0.5 * (
+            (2 * p1[0]) +
+            (-p0[0] + p2[0]) * t +
+            (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+            (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3
+        )
+        v = 0.5 * (
+            (2 * p1[1]) +
+            (-p0[1] + p2[1]) * t +
+            (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+            (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3
+        )
+        points_u.append(u)
+        points_v.append(v)
+
+    return points_u, points_v
+
+
+def fit_catmull_rom_spline(center_u, center_v, control_spacing=10):
+    """Fit a Catmull-Rom spline through the centerline.
+
+    Subsamples control points at `control_spacing` interval, then evaluates
+    the spline back to the original resolution. This enforces geometric
+    continuity and removes high-frequency noise.
+
+    Returns (spline_u, spline_v) at the original point count.
+    """
+    n = len(center_u)
+
+    # Extract control points at regular spacing
+    control_indices = list(range(0, n, control_spacing))
+    if control_indices[-1] != n - 1:
+        control_indices.append(n - 1)
+    controls = [(center_u[i], center_v[i]) for i in control_indices]
+    nc = len(controls)
+
+    # Evaluate spline through each pair of control points
+    spline_u = []
+    spline_v = []
+
+    for ci in range(nc):
+        p0 = controls[(ci - 1) % nc]
+        p1 = controls[ci]
+        p2 = controls[(ci + 1) % nc]
+        p3 = controls[(ci + 2) % nc]
+
+        # Number of output samples for this segment
+        idx_start = control_indices[ci]
+        idx_end = control_indices[(ci + 1) % nc]
+        if ci < nc - 1:
+            num_samples = idx_end - idx_start
+        else:
+            num_samples = n - idx_start  # last segment wraps
+
+        if num_samples <= 0:
+            continue
+
+        seg_u, seg_v = catmull_rom_segment(p0, p1, p2, p3, num_samples)
+        spline_u.extend(seg_u)
+        spline_v.extend(seg_v)
+
+    # Ensure exactly n points (trim or pad due to rounding)
+    spline_u = spline_u[:n]
+    spline_v = spline_v[:n]
+    while len(spline_u) < n:
+        spline_u.append(spline_u[-1])
+        spline_v.append(spline_v[-1])
+
+    return spline_u, spline_v
+
+
+def compute_spline_normals(spline_u, spline_v):
+    """Compute normals from the spline (tangent perpendicular).
+
+    These are smoother than the reference path normals since they come
+    from the spline geometry.
+    """
+    return compute_normals(spline_u, spline_v)
+
+
 def close_loop(center_u, center_v, blend_meters=20):
     """Blend start/end to ensure a closed loop."""
     n = len(center_u)
@@ -684,43 +778,49 @@ def main():
     left_edges, right_edges, confidence = interpolate_low_confidence_bins(
         left_edges, right_edges, confidence, n_points)
 
-    # Phase 5c: Smooth edges AFTER interpolation (critical ordering)
-    print("Smoothing edges (window=15)...")
-    left_edges = smooth_values(left_edges, window=15)
-    right_edges = smooth_values(right_edges, window=15)
+    # Phase 6: Rough centerline from edges (before spline)
+    print("\nComputing rough centerline from edges...")
+    center_u, center_v, raw_half_widths = compute_true_centerline(
+        ref_u, ref_v, normals_u, normals_v, left_edges, right_edges)
 
-    # Phase 5d: Clamp width change rate (max 0.5m per step, anti-spike)
-    print("Clamping width changes (max delta = {:.1f}m/step)...".format(MAX_WIDTH_DELTA_M))
+    # Phase 7: Pre-smooth centerline before spline fit (window=20)
+    print("Pre-smoothing centerline (window=20)...")
+    center_u = smooth_values(center_u, window=20)
+    center_v = smooth_values(center_v, window=20)
+
+    # Phase 8: Fit Catmull-Rom spline (CORE — enforces geometric continuity)
+    print("Fitting Catmull-Rom spline (control spacing=10)...")
+    spline_u, spline_v = fit_catmull_rom_spline(center_u, center_v, control_spacing=10)
+
+    # Phase 9: Compute width from original edges, smooth separately
+    print("Smoothing track width (window=25)...")
     widths = [right_edges[i] - left_edges[i] for i in range(n_points)]
+    widths = smooth_values(widths, window=25)
+
+    # Phase 9b: Clamp width change rate (max 0.5m per step, anti-spike)
+    print("Clamping width changes (max delta = {:.1f}m/step)...".format(MAX_WIDTH_DELTA_M))
     for i in range(1, n_points):
         delta = widths[i] - widths[i - 1]
         if abs(delta) > MAX_WIDTH_DELTA_M:
             widths[i] = widths[i - 1] + math.copysign(MAX_WIDTH_DELTA_M, delta)
-            # Recompute edges around center
-            center = (left_edges[i] + right_edges[i]) / 2.0
-            left_edges[i] = center - widths[i] / 2.0
-            right_edges[i] = center + widths[i] / 2.0
-    # Wrap: clamp last->first transition
+    # Wrap
     delta = widths[0] - widths[-1]
     if abs(delta) > MAX_WIDTH_DELTA_M:
         widths[0] = widths[-1] + math.copysign(MAX_WIDTH_DELTA_M, delta)
-        center = (left_edges[0] + right_edges[0]) / 2.0
-        left_edges[0] = center - widths[0] / 2.0
-        right_edges[0] = center + widths[0] / 2.0
 
-    # Phase 6: True centerline from cleaned edges
-    print("\nComputing true centerline...")
-    center_u, center_v, half_widths = compute_true_centerline(
-        ref_u, ref_v, normals_u, normals_v, left_edges, right_edges)
+    # Phase 9c: Edge shrink + convert to half_widths
+    half_widths = [w / 2.0 * EDGE_SHRINK_FACTOR for w in widths]
+    print(f"Edge shrink applied (factor={EDGE_SHRINK_FACTOR})")
 
-    # Phase 6b: Edge shrink (remove runoff noise)
-    print(f"Shrinking edges (factor={EDGE_SHRINK_FACTOR})...")
-    half_widths = [hw * EDGE_SHRINK_FACTOR for hw in half_widths]
+    # Phase 10: Use spline as final centerline
+    center_u = spline_u
+    center_v = spline_v
 
-    # Phase 7: Smooth centerline
-    print("Smoothing centerline (window=10)...")
-    center_u = smooth_values(center_u, window=10)
-    center_v = smooth_values(center_v, window=10)
+    # Close the loop
+    center_u, center_v = close_loop(center_u, center_v)
+
+    # Optional light final smoothing on edges (window=10, via half_widths)
+    half_widths = smooth_values(half_widths, window=10)
 
     # Debug: per-bin confidence summary
     print("\nBin confidence debug:")
@@ -734,9 +834,6 @@ def main():
                     avg_count = sum(s[0] for s in valid_stats) / len(valid_stats)
                     avg_speed = sum(s[1] for s in valid_stats) / len(valid_stats)
                     print(f"    avg samples/bin={avg_count:.1f}, avg speed={avg_speed:.0f} km/h")
-
-    # Close the loop
-    center_u, center_v = close_loop(center_u, center_v)
 
     # Validation
     print("\nValidation:")
