@@ -15,33 +15,39 @@ Start a race or time trial in F1 2025, then run:
 ```bash
 ./record.sh
 ```
-Drive 3-5 laps varying your line (some laps left, some right, some normal). Press **Ctrl+C** to stop. This saves a timestamped file like `telemetry_20260317_133507.jsonl`.
+Drive 3-5 laps varying your line (some laps left, some right, some normal). Press **Ctrl+C** to stop. This saves a timestamped file in the `telemetry/` folder like `telemetry/telemetry_20260317_133507.jsonl`.
 
 To cancel without saving, press Ctrl+C then delete the file:
 ```bash
-rm telemetry_20260317_133507.jsonl
+rm telemetry/telemetry_20260317_133507.jsonl
 ```
 
 ### Step 2: Build the track map
 ```bash
-./build_true_centerline.sh telemetry_20260317_133507.jsonl
+./build_true_centerline.sh telemetry/telemetry_20260317_133507.jsonl
 ```
-This outputs `track_N_true_map.json` (e.g. `track_0_true_map.json` for Melbourne).
+This outputs to `Track Map Builds/track_N_true_map.json` (e.g. `Track Map Builds/track_0_true_map.json` for Melbourne).
 
 To combine multiple recordings:
 ```bash
-./build_true_centerline.sh left_laps.jsonl right_laps.jsonl normal.jsonl
+./build_true_centerline.sh telemetry/left_laps.jsonl telemetry/right_laps.jsonl telemetry/normal.jsonl
 ```
 
-### Step 3: Use the track map
+### Step 3: Build track intelligence (optional)
+```bash
+./build_intelligence.sh "Track Map Builds/track_0_true_map.json"
+```
+This outputs `Track Map Builds/track_0_intelligence.json` with per-point curvature, corner detection, corner phases (entry/apex/exit), and target speed.
+
+### Step 4: Use the track map
 Watch live with the GUI (also auto-records telemetry for replay):
 ```bash
-./track_map_gui.sh track_0_true_map.json
+./track_map_gui.sh "Track Map Builds/track_0_true_map.json"
 ```
 
 Or replay a previous session:
 ```bash
-./replay.sh track_0_true_map.json telemetry_20260317_133507.jsonl
+./replay.sh "Track Map Builds/track_0_true_map.json" telemetry/telemetry_20260317_133507.jsonl
 ```
 
 ## Live Monitoring
@@ -73,21 +79,21 @@ Shows your car moving on the track in real time with true track width rendering 
 
 ### Preview Track Map (No Game)
 ```bash
-python3 track_map_live.py track_0_true_map.json --preview
+python3 track_map_live.py "Track Map Builds/track_0_true_map.json" --preview
 ```
 
 ### Debug Car Positioning
 Print lateral offsets per car to stderr:
 ```bash
-./track_map_gui.sh track_0_true_map.json --debug
-./replay.sh track_0_true_map.json telemetry.jsonl --debug
+./track_map_gui.sh "Track Map Builds/track_0_true_map.json" --debug
+./replay.sh "Track Map Builds/track_0_true_map.json" telemetry.jsonl --debug
 ```
 
 ## Race Replay
 
 Plays back a recorded session on the track map with full telemetry stats panel.
 ```bash
-./replay.sh track_0_true_map.json telemetry_20260317_133507.jsonl
+./replay.sh "Track Map Builds/track_0_true_map.json" telemetry/telemetry_20260317_133507.jsonl
 ```
 
 **Controls:**
@@ -125,7 +131,7 @@ mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp"
 # Pipe to any Python tool
 mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" 2>&1 | python3 live_monitor.py
 mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" 2>&1 | python3 record_telemetry.py
-mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" | python3 -u track_map_live.py track_0_true_map.json
+mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" | python3 -u track_map_live.py "Track Map Builds/track_0_true_map.json"
 
 # Run the UDP packet simulator (for testing without the game)
 mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.UDPPacketSender"
@@ -141,3 +147,6 @@ Edit `src/main/resources/application.properties`:
 | `output.rate.hz` | 30 | JSON output frame rate |
 | `nearby.cars.max` | 6 | Max nearby cars in output |
 | `nearby.cars.time.gap.seconds` | 1.5 | Time gap threshold (seconds) |
+
+#Track List
+Track 0 - Australia

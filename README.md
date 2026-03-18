@@ -2,7 +2,7 @@
 
 A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry data.
 
-**Status:** ✅ Complete | All 18 development phases finished | 21 unit tests passing
+**Status:** ✅ Complete | All 19 development phases finished | 21 unit tests passing
 
 ## Quick Start
 
@@ -152,6 +152,7 @@ See [TESTING.md](TESTING.md) for complete testing instructions including:
 - [x] **Phase 16:** Adaptive Edge Reconstruction (per-bin confidence tiers, low-confidence interpolation, corrected pipeline ordering)
 - [x] **Phase 17:** Spline-Based Track Model (Catmull-Rom spline centerline, geometry-driven edges, separated width smoothing)
 - [x] **Phase 18:** Spline Rendering Pipeline (spline-derived normals stored in map, renderer uses pre-computed normals, edge symmetry validation)
+- [x] **Phase 19:** Track Intelligence (per-point curvature, corner detection with entry/apex/exit phases, physics-based target speed with braking constraint)
 
 ## Output Format
 

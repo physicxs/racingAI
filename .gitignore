@@ -36,4 +36,6 @@ logs/
 
 # Application output
 *.jsonl
+telemetry/
+Track Map Builds/
 telemetry-output/

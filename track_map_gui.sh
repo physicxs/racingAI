@@ -47,7 +47,8 @@ echo "  UDP Send Rate: 30 Hz"
 echo "  UDP Port: 20777"
 echo "  UDP IP: 127.0.0.1 (or this machine's IP)"
 echo ""
-RECORD_FILE="telemetry_$(date +%Y%m%d_%H%M%S).jsonl"
+mkdir -p telemetry
+RECORD_FILE="telemetry/telemetry_$(date +%Y%m%d_%H%M%S).jsonl"
 
 echo "Starting receiver and GUI..."
 echo "Recording to: $RECORD_FILE"

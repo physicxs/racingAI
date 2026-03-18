@@ -6,6 +6,7 @@ Shows live statistics while recording.
 
 import json
 import sys
+import os
 import time
 from datetime import datetime
 
@@ -15,9 +16,10 @@ def format_duration(seconds):
     secs = int(seconds % 60)
     return f"{mins:02d}:{secs:02d}"
 
-# Generate filename with timestamp
+# Generate filename with timestamp, store in telemetry/ folder
+os.makedirs("telemetry", exist_ok=True)
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-filename = f"telemetry_{timestamp}.jsonl"
+filename = f"telemetry/telemetry_{timestamp}.jsonl"
 
 print(f"╔════════════════════════════════════════════════════════════════════════════════╗")
 print(f"║ F1 2025 TELEMETRY RECORDER                                                     ║")

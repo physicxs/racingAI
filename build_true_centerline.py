@@ -18,6 +18,7 @@ Usage:
 
 import json
 import sys
+import os
 import math
 
 EDGE_SHRINK_FACTOR = 0.9  # Shrink edges to remove runoff noise
@@ -864,10 +865,12 @@ def main():
     print("\nValidation:")
     validate(center_u, center_v, half_widths, ref_u, ref_v)
 
-    # Output
+    # Output — save to "Track Map Builds/" folder by default
+    MAP_OUTPUT_DIR = "Track Map Builds"
+    os.makedirs(MAP_OUTPUT_DIR, exist_ok=True)
     if output_path is None:
         track_name = f"track_{track_id}" if track_id is not None else "track_unknown"
-        output_path = f"{track_name}_true_map.json"
+        output_path = os.path.join(MAP_OUTPUT_DIR, f"{track_name}_true_map.json")
 
     write_track_map(output_path, track_id, track_length, u_key, v_key,
                     center_u, center_v, half_widths, spline_normals_u, spline_normals_v)
