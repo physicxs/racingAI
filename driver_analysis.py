@@ -284,6 +284,19 @@ def analyze(intel_path, telemetry_path):
         avg_speed_delta = sum(all_deltas) / len(all_deltas) if all_deltas else 0
         max_lateral_error = max((abs(f['lateral_offset']) for f in cframes), default=0)
 
+        # Per-phase metrics for coaching layer
+        entry_deltas = [f['speed_delta'] for f in entry_frames]
+        avg_entry_speed_delta = sum(entry_deltas) / len(entry_deltas) if entry_deltas else 0
+
+        apex_laterals = [f['lateral_offset'] for f in apex_region]
+        avg_apex_lateral = sum(apex_laterals) / len(apex_laterals) if apex_laterals else 0
+
+        exit_deltas = [f['speed_delta'] for f in exit_frames]
+        avg_exit_speed_delta = sum(exit_deltas) / len(exit_deltas) if exit_deltas else 0
+
+        exit_throttles = [f['throttle'] for f in exit_frames]
+        avg_exit_throttle = sum(exit_throttles) / len(exit_throttles) if exit_throttles else 1.0
+
         corner_results.append({
             'corner_id': cid,
             'entry_score': entry_score,
@@ -291,6 +304,10 @@ def analyze(intel_path, telemetry_path):
             'exit_score': exit_score,
             'avg_speed_delta': round(avg_speed_delta, 2),
             'max_lateral_error': round(max_lateral_error, 2),
+            'avg_entry_speed_delta': round(avg_entry_speed_delta, 2),
+            'avg_apex_lateral': round(avg_apex_lateral, 2),
+            'avg_exit_speed_delta': round(avg_exit_speed_delta, 2),
+            'avg_exit_throttle': round(avg_exit_throttle, 3),
             'frames': len(cframes),
             'entry_frames': len(entry_frames),
             'apex_frames': len(apex_frames),
