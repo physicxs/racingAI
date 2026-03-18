@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""
+F1 2025 Player vs Track Analysis
+
+Evaluates driver performance against the track intelligence model.
+Computes per-corner scores based on entry/apex/exit quality.
+
+Usage:
+    python3 driver_analysis.py <intelligence.json> <telemetry.jsonl> [-o output.json]
+"""
+
+import json
+import sys
+import os
+import math
+from collections import defaultdict
+
+
+# ─── Tunable Parameters ─────────────────────────────────────────────────────
+
+SPEED_DELTA_THRESHOLD = 5.0   # m/s — threshold for braking errors
+APEX_LATERAL_THRESHOLD = 2.0  # meters — missed apex threshold
+EXIT_THROTTLE_THRESHOLD = 0.8 # throttle below this = poor exit
+
+PENALTY_EARLY_BRAKE = 10
+PENALTY_LATE_BRAKE = 15
+PENALTY_MISSED_APEX = 20
+PENALTY_POOR_EXIT = 25
+
+SEARCH_WINDOW = 100  # points to search around estimated index
+
+
+# ─── Step 1: Map Car Position to Track ───────────────────────────────────────
+
+def build_track_index(intel_points):
+    """Precompute arrays for fast nearest-point lookup."""
+    us = [p['u'] for p in intel_points]
+    vs = [p['v'] for p in intel_points]
+    return us, vs
+
+
+def find_nearest_track_index(car_u, car_v, us, vs, hint_idx, n):
+    """Find nearest track point using segment-based projection.
+
+    Searches a window around hint_idx for efficiency.
+    """
+    best_dist = float('inf')
+    best_idx = hint_idx
+
+    start = hint_idx - SEARCH_WINDOW
+    end = hint_idx + SEARCH_WINDOW
+
+    for i in range(start, end):
+        idx = i % n
+        du = car_u - us[idx]
+        dv = car_v - vs[idx]
+        dist_sq = du * du + dv * dv
+        if dist_sq < best_dist:
+            best_dist = dist_sq
+            best_idx = idx
+
+    return best_idx
+
+
+def map_lap_distance_to_index(lap_distance, intel_points, total_arc):
+    """Estimate track index from lapDistance for search hint."""
+    if total_arc <= 0:
+        return 0
+    n = len(intel_points)
+    # lapDistance wraps at track_length, arc_length is similar
+    frac = (lap_distance % total_arc) / total_arc
+    return int(frac * n) % n
+
+
+# ─── Step 2: Per-Frame Features ──────────────────────────────────────────────
+
+def compute_lateral_offset(car_u, car_v, track_u, track_v, heading):
+    """Compute signed lateral offset from centerline.
+
+    Positive = right of centerline, negative = left.
+    """
+    dx = car_u - track_u
+    dy = car_v - track_v
+    return dx * (-math.sin(heading)) + dy * math.cos(heading)
+
+
+# ─── Main Analysis ───────────────────────────────────────────────────────────
+
+def analyze(intel_path, telemetry_path):
+    """Run full driver analysis pipeline."""
+
+    # Load track intelligence
+    print(f"Loading track intelligence: {intel_path}")
+    with open(intel_path) as f:
+        intel = json.load(f)
+
+    intel_points = intel['points']
+    n = len(intel_points)
+    total_arc = intel['total_arc_length_m']
+    us, vs = build_track_index(intel_points)
+
+    # Load coordinate axes from track map (for world→2D mapping)
+    # Intelligence uses u/v which map to world x/z for this track
+    # We read these from the track map if available, default to x/z
+    u_axis = 'x'
+    v_axis = 'z'
+
+    print(f"  Points: {n}, Arc length: {total_arc:.0f}m")
+    num_corners = max((p['corner_id'] for p in intel_points), default=-1) + 1
+    print(f"  Corners: {num_corners}")
+
+    # Load telemetry
+    print(f"\nLoading telemetry: {telemetry_path}")
+    frames = []
+    with open(telemetry_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                frames.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    print(f"  Frames: {len(frames)}")
+
+    # Filter to valid frames with player data
+    valid_frames = []
+    for frame in frames:
+        player = frame.get('player')
+        if not player:
+            continue
+        world_pos = player.get('world_pos_m')
+        if not world_pos:
+            continue
+        lap_dist = player.get('lapDistance', 0)
+        if lap_dist < 0:
+            continue  # pre-race positioning
+        valid_frames.append(frame)
+
+    print(f"  Valid frames (with position, lapDist >= 0): {len(valid_frames)}")
+    if not valid_frames:
+        print("ERROR: No valid frames found.")
+        return None
+
+    # Step 1 & 2: Map each frame to track and compute features
+    print("\nStep 1-2: Mapping frames to track and computing features...")
+    frame_data = []
+    prev_idx = 0
+
+    for frame in valid_frames:
+        player = frame['player']
+        world_pos = player['world_pos_m']
+
+        # Map world coordinates to track 2D (u=x, v=z)
+        car_u = world_pos[u_axis]
+        car_v = world_pos[v_axis]
+
+        # Get search hint from lapDistance
+        lap_dist = player.get('lapDistance', 0)
+        hint = map_lap_distance_to_index(lap_dist, intel_points, total_arc)
+
+        # Find nearest track point
+        idx = find_nearest_track_index(car_u, car_v, us, vs, hint, n)
+        prev_idx = idx
+
+        tp = intel_points[idx]
+
+        # Lateral offset
+        lateral = compute_lateral_offset(car_u, car_v, tp['u'], tp['v'], tp['heading'])
+
+        # Speed delta (telemetry speed is km/h, target_speed is m/s)
+        player_speed_ms = player['speed'] / 3.6
+        speed_delta = player_speed_ms - tp['target_speed']
+
+        frame_data.append({
+            'track_idx': idx,
+            's': tp['s'],
+            'corner_id': tp['corner_id'],
+            'corner_phase': tp['corner_phase'],
+            'lateral_offset': lateral,
+            'speed_delta': speed_delta,
+            'player_speed_ms': player_speed_ms,
+            'target_speed_ms': tp['target_speed'],
+            'throttle': player.get('throttle', 0),
+            'brake': player.get('brake', 0),
+            'lap_number': player.get('lapNumber', 0),
+        })
+
+    # Validate mapping
+    jumps = 0
+    for i in range(1, len(frame_data)):
+        diff = abs(frame_data[i]['track_idx'] - frame_data[i - 1]['track_idx'])
+        if diff > n // 2:
+            diff = n - diff  # wrap
+        if diff > 50:
+            jumps += 1
+    print(f"  Large index jumps (>50): {jumps}")
+
+    # Step 3: Group frames by corner
+    print("Step 3: Grouping frames by corner...")
+    corner_frames = defaultdict(list)
+    for fd in frame_data:
+        cid = fd['corner_id']
+        if cid >= 0:
+            corner_frames[cid].append(fd)
+
+    print(f"  Corners with data: {len(corner_frames)}/{num_corners}")
+
+    # Step 4-6: Detect errors, compute scores, aggregate
+    print("Step 4-6: Computing corner scores...")
+    corner_results = []
+
+    for cid in sorted(corner_frames.keys()):
+        cframes = corner_frames[cid]
+
+        entry_frames = [f for f in cframes if f['corner_phase'] == 'entry']
+        apex_frames = [f for f in cframes if f['corner_phase'] == 'apex']
+        exit_frames = [f for f in cframes if f['corner_phase'] == 'exit']
+
+        # --- Entry score: based on speed ratio at corner entry ---
+        entry_score = 100
+        if entry_frames:
+            # Ratio of actual to target speed (1.0 = perfect)
+            ratios = []
+            for f in entry_frames:
+                if f['target_speed_ms'] > 1:
+                    ratios.append(f['player_speed_ms'] / f['target_speed_ms'])
+            if ratios:
+                avg_ratio = sum(ratios) / len(ratios)
+                if avg_ratio < 0.7:
+                    # Very early braking — large penalty
+                    entry_score -= PENALTY_EARLY_BRAKE * 2
+                elif avg_ratio < 0.85:
+                    # Early braking
+                    entry_score -= PENALTY_EARLY_BRAKE
+                elif avg_ratio > 1.1:
+                    # Late braking (carrying too much speed)
+                    entry_score -= PENALTY_LATE_BRAKE
+
+        # --- Apex score: based on lateral offset at apex ---
+        apex_score = 100
+        # Use apex frames, or middle third of corner as proxy
+        apex_region = apex_frames if apex_frames else []
+        if not apex_region:
+            third = len(cframes) // 3
+            apex_region = cframes[third:2 * third] if third > 0 else cframes
+
+        if apex_region:
+            laterals = [abs(f['lateral_offset']) for f in apex_region]
+            mean_lateral = sum(laterals) / len(laterals)
+            # Proportional penalty: 2m=0, 4m=-10, 6m=-20
+            if mean_lateral > APEX_LATERAL_THRESHOLD:
+                penalty = min(PENALTY_MISSED_APEX, int((mean_lateral - APEX_LATERAL_THRESHOLD) * 10))
+                apex_score -= penalty
+
+        # --- Exit score: speed recovery + throttle application ---
+        exit_score = 100
+        if exit_frames:
+            # Check speed ratio at exit
+            ratios = []
+            low_throttle_pct = 0
+            for f in exit_frames:
+                if f['target_speed_ms'] > 1:
+                    ratios.append(f['player_speed_ms'] / f['target_speed_ms'])
+                if f['throttle'] < EXIT_THROTTLE_THRESHOLD:
+                    low_throttle_pct += 1
+
+            low_throttle_pct = low_throttle_pct / len(exit_frames)
+            if ratios:
+                avg_ratio = sum(ratios) / len(ratios)
+                if avg_ratio < 0.7 and low_throttle_pct > 0.5:
+                    exit_score -= PENALTY_POOR_EXIT
+                elif avg_ratio < 0.85 and low_throttle_pct > 0.3:
+                    exit_score -= int(PENALTY_POOR_EXIT * 0.6)
+
+        # Clamp
+        entry_score = max(0, entry_score)
+        apex_score = max(0, apex_score)
+        exit_score = max(0, exit_score)
+
+        # Aggregate metrics
+        all_deltas = [f['speed_delta'] for f in cframes]
+        avg_speed_delta = sum(all_deltas) / len(all_deltas) if all_deltas else 0
+        max_lateral_error = max((abs(f['lateral_offset']) for f in cframes), default=0)
+
+        corner_results.append({
+            'corner_id': cid,
+            'entry_score': entry_score,
+            'apex_score': apex_score,
+            'exit_score': exit_score,
+            'avg_speed_delta': round(avg_speed_delta, 2),
+            'max_lateral_error': round(max_lateral_error, 2),
+            'frames': len(cframes),
+            'entry_frames': len(entry_frames),
+            'apex_frames': len(apex_frames),
+            'exit_frames': len(exit_frames),
+        })
+
+    # Summary
+    print("\n" + "=" * 60)
+    print("Corner Analysis Results")
+    print("=" * 60)
+    print(f"{'ID':>3} {'Entry':>6} {'Apex':>6} {'Exit':>6} {'AvgΔv':>8} {'MaxLat':>7} {'Frames':>7}")
+    print("-" * 60)
+
+    all_scores = []
+    for cr in corner_results:
+        print(f"{cr['corner_id']:>3} "
+              f"{cr['entry_score']:>6} "
+              f"{cr['apex_score']:>6} "
+              f"{cr['exit_score']:>6} "
+              f"{cr['avg_speed_delta']:>+7.1f} "
+              f"{cr['max_lateral_error']:>7.1f} "
+              f"{cr['frames']:>7}")
+        all_scores.extend([cr['entry_score'], cr['apex_score'], cr['exit_score']])
+
+    print("-" * 60)
+    if corner_results:
+        avg_entry = sum(c['entry_score'] for c in corner_results) / len(corner_results)
+        avg_apex = sum(c['apex_score'] for c in corner_results) / len(corner_results)
+        avg_exit = sum(c['exit_score'] for c in corner_results) / len(corner_results)
+        overall = (avg_entry + avg_apex + avg_exit) / 3
+        print(f"AVG {avg_entry:>6.0f} {avg_apex:>6.0f} {avg_exit:>6.0f}   Overall: {overall:.0f}/100")
+
+    # Validation
+    print("\nValidation:")
+    all_laterals = [abs(f['lateral_offset']) for f in frame_data]
+    print(f"  Lateral offset: mean={sum(all_laterals)/len(all_laterals):.1f}m, "
+          f"max={max(all_laterals):.1f}m")
+    print(f"  Index jumps: {jumps}")
+    score_set = set(all_scores)
+    if len(score_set) == 1:
+        print(f"  WARNING: All scores identical ({score_set.pop()}) — may need tuning")
+    else:
+        print(f"  Score distribution: {len([s for s in all_scores if s == 100])} perfect, "
+              f"{len([s for s in all_scores if s < 100])} penalized")
+
+    return {
+        'track_id': intel.get('track_id'),
+        'telemetry_file': os.path.basename(telemetry_path),
+        'total_frames': len(frames),
+        'valid_frames': len(valid_frames),
+        'corners_analyzed': len(corner_results),
+        'corners': corner_results,
+    }
+
+
+# ─── CLI ─────────────────────────────────────────────────────────────────────
+
+def main():
+    output_path = None
+    intel_path = None
+    telemetry_path = None
+
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == '-o' and i + 1 < len(args):
+            output_path = args[i + 1]
+            i += 2
+        elif args[i].startswith('-'):
+            print(f"Unknown option: {args[i]}")
+            sys.exit(1)
+        else:
+            if intel_path is None:
+                intel_path = args[i]
+            elif telemetry_path is None:
+                telemetry_path = args[i]
+            i += 1
+
+    if not intel_path or not telemetry_path:
+        print("F1 2025 Player vs Track Analysis")
+        print("=" * 40)
+        print()
+        print("Usage: python3 driver_analysis.py <intelligence.json> <telemetry.jsonl> [-o output.json]")
+        print()
+        print("Evaluates driver performance against the track intelligence model.")
+        print()
+        print("Examples:")
+        print('  python3 driver_analysis.py "Track Map Builds/track_0_intelligence.json" telemetry/session.jsonl')
+        print('  python3 driver_analysis.py intel.json telemetry.jsonl -o my_analysis.json')
+        sys.exit(1)
+
+    print("F1 2025 Player vs Track Analysis")
+    print("=" * 40)
+
+    result = analyze(intel_path, telemetry_path)
+
+    if result:
+        MAP_OUTPUT_DIR = "Track Map Builds"
+        os.makedirs(MAP_OUTPUT_DIR, exist_ok=True)
+        if output_path is None:
+            track_id = result.get('track_id')
+            track_name = f"track_{track_id}" if track_id is not None else "track_unknown"
+            output_path = os.path.join(MAP_OUTPUT_DIR, f"{track_name}_driver_analysis.json")
+
+        with open(output_path, 'w') as f:
+            json.dump(result, f, indent=2)
+
+        print(f"\nDriver analysis written to {output_path}")
+
+
+if __name__ == '__main__':
+    main()

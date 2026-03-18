@@ -2,7 +2,7 @@
 
 A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry data.
 
-**Status:** ✅ Complete | All 19 development phases finished | 21 unit tests passing
+**Status:** ✅ Complete | All 20 development phases finished | 21 unit tests passing
 
 ## Quick Start
 
@@ -29,6 +29,11 @@ A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry 
 **🔄 Race Replay** - Replay a recorded race on the track map:
 ```bash
 ./replay.sh <track_map.json> <telemetry.jsonl>
+```
+
+**📈 Analyze Performance** - Per-corner driver scoring:
+```bash
+./analyze_driver.sh <intelligence.json> <telemetry.jsonl>
 ```
 
 **📊 Test Inputs** - Verify controls:
@@ -153,6 +158,7 @@ See [TESTING.md](TESTING.md) for complete testing instructions including:
 - [x] **Phase 17:** Spline-Based Track Model (Catmull-Rom spline centerline, geometry-driven edges, separated width smoothing)
 - [x] **Phase 18:** Spline Rendering Pipeline (spline-derived normals stored in map, renderer uses pre-computed normals, edge symmetry validation)
 - [x] **Phase 19:** Track Intelligence (per-point curvature, corner detection with entry/apex/exit phases, physics-based target speed with braking constraint)
+- [x] **Phase 20:** Player vs Track Analysis (per-corner entry/apex/exit scoring, speed delta analysis, lateral offset detection, driving error classification)
 
 ## Output Format
 

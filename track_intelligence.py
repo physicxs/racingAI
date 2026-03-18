@@ -24,11 +24,12 @@ MU = 1.8                    # Tire grip coefficient (1.6-2.0 for F1)
 G = 9.81                    # Gravity (m/s²)
 MAX_SPEED_MS = 100.0        # Speed cap (360 km/h)
 CURVATURE_THRESHOLD = 0.005 # |curvature| above this = corner
-CURVATURE_SMOOTH_WINDOW = 25 # Smoothing window for curvature
-CURVATURE_MAX = 0.05        # Max realistic curvature (radius 20m)
+CURVATURE_SMOOTH_WINDOW = 7 # Smoothing window for curvature (small)
+CURVATURE_MAX = 0.2         # Safety cap curvature (radius 5m)
+RESAMPLE_SPACING = 1.0      # Uniform arc-length spacing (meters)
 SPEED_SMOOTH_WINDOW = 20    # Smoothing window for target speed
 A_MAX_BRAKE = 14.0          # Max braking deceleration (m/s²)
-MIN_CORNER_POINTS = 15      # Minimum points to count as a corner segment
+MIN_CORNER_LENGTH_M = 30.0  # Minimum corner arc length (meters)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -71,6 +72,39 @@ def compute_arc_length(us, vs):
     return s
 
 
+# ─── Step 1b: Resample to Uniform Arc-Length Spacing ─────────────────────────
+
+def resample_uniform(us, vs, arc_length, spacing=RESAMPLE_SPACING):
+    """Resample centerline to uniform arc-length spacing via linear interpolation."""
+    total = arc_length[-1]
+    n_orig = len(us)
+    n_new = int(total / spacing)
+    if n_new < 10:
+        return us[:], vs[:], arc_length[:]
+
+    new_us = [0.0] * n_new
+    new_vs = [0.0] * n_new
+    new_s = [0.0] * n_new
+
+    j = 0  # pointer into original points
+    for i in range(n_new):
+        target_s = i * spacing
+        # Advance j until arc_length[j+1] >= target_s
+        while j < n_orig - 2 and arc_length[j + 1] < target_s:
+            j += 1
+        # Interpolate between j and j+1
+        seg_len = arc_length[j + 1] - arc_length[j]
+        if seg_len < 1e-9:
+            t = 0.0
+        else:
+            t = (target_s - arc_length[j]) / seg_len
+        new_us[i] = us[j] + t * (us[j + 1] - us[j])
+        new_vs[i] = vs[j] + t * (vs[j + 1] - vs[j])
+        new_s[i] = target_s
+
+    return new_us, new_vs, new_s
+
+
 # ─── Step 2: Heading ────────────────────────────────────────────────────────
 
 def compute_heading(us, vs):
@@ -88,18 +122,22 @@ def compute_heading(us, vs):
 # ─── Step 3: Curvature ──────────────────────────────────────────────────────
 
 def compute_curvature(heading, arc_length):
-    """Compute curvature (1/m) = dtheta/ds at each point."""
+    """Compute curvature (1/m) = dtheta/ds at each point.
+
+    With uniform spacing, ds is constant (~RESAMPLE_SPACING) so curvature
+    is computed cleanly without variable-spacing artifacts.
+    """
     n = len(heading)
     curvature = [0.0] * n
     for i in range(n):
         i_next = (i + 1) % n
         dtheta = normalize_angle(heading[i_next] - heading[i])
-        ds = arc_length[i_next] - arc_length[i]
         if i_next == 0:
-            # Wrap: estimate ds from last segment
-            du = 0  # skip wrap point
-            ds = 1.0  # fallback
-        if abs(ds) < 0.001:
+            # Wrap: use spacing as ds estimate
+            ds = RESAMPLE_SPACING
+        else:
+            ds = arc_length[i_next] - arc_length[i]
+        if abs(ds) < 1e-6:
             curvature[i] = curvature[i - 1] if i > 0 else 0.0
         else:
             curvature[i] = dtheta / ds
@@ -108,10 +146,11 @@ def compute_curvature(heading, arc_length):
 
 # ─── Step 4: Corner Detection ───────────────────────────────────────────────
 
-def detect_corners(curvature):
+def detect_corners(curvature, arc_length):
     """Label each point as corner or straight, group into corner segments.
 
-    Returns (corner_ids, is_corner) where corner_ids[i] = -1 for straights.
+    Uses MIN_CORNER_LENGTH_M (arc length in meters) to filter short segments.
+    Returns (corner_ids, is_corner, num_corners).
     """
     n = len(curvature)
     is_corner = [abs(curvature[i]) >= CURVATURE_THRESHOLD for i in range(n)]
@@ -127,20 +166,19 @@ def detect_corners(curvature):
             start = i
         elif not is_corner[i] and in_corner:
             in_corner = False
-            length = i - start
-            if length >= MIN_CORNER_POINTS:
+            seg_length_m = arc_length[i - 1] - arc_length[start]
+            if seg_length_m >= MIN_CORNER_LENGTH_M:
                 for j in range(start, i):
                     corner_ids[j] = current_id
                 current_id += 1
             else:
-                # Too short, mark as straight
                 for j in range(start, i):
                     is_corner[j] = False
 
     # Handle wrap: if still in corner at end
     if in_corner:
-        length = n - start
-        if length >= MIN_CORNER_POINTS:
+        seg_length_m = arc_length[-1] - arc_length[start]
+        if seg_length_m >= MIN_CORNER_LENGTH_M:
             for j in range(start, n):
                 corner_ids[j] = current_id
             current_id += 1
@@ -239,7 +277,11 @@ def validate(curvature, speeds, corner_ids, num_corners, phases):
     straight_points = n - corner_points
     apexes = sum(1 for p in phases if p == 'apex')
 
-    print(f"  Curvature: max |k| = {max_k:.5f}, spikes > 0.05: {spikes}")
+    above_thresh = sum(1 for k in curvature if abs(k) >= CURVATURE_THRESHOLD)
+    above_pct = above_thresh / n * 100
+
+    print(f"  Curvature: max |k| = {max_k:.5f}")
+    print(f"  Points above threshold ({CURVATURE_THRESHOLD}): {above_thresh} ({above_pct:.1f}%)")
     print(f"  Speed: min = {min_speed:.1f} m/s ({min_speed * 3.6:.0f} km/h), "
           f"max = {max_speed:.1f} m/s ({max_speed * 3.6:.0f} km/h)")
     print(f"  Invalid speeds (NaN/negative): {nan_count}")
@@ -344,8 +386,14 @@ def main():
 
     # Step 1: Arc length
     print("\nStep 1: Computing arc length...")
-    arc_length = compute_arc_length(us, vs)
-    print(f"  Total arc length: {arc_length[-1]:.1f}m")
+    raw_arc = compute_arc_length(us, vs)
+    print(f"  Total arc length: {raw_arc[-1]:.1f}m")
+
+    # Step 1b: Resample to uniform arc-length spacing
+    print(f"Step 1b: Resampling to uniform {RESAMPLE_SPACING}m spacing...")
+    us, vs, arc_length = resample_uniform(us, vs, raw_arc, RESAMPLE_SPACING)
+    n = len(us)
+    print(f"  Resampled: {n} points")
 
     # Step 2: Heading
     print("Step 2: Computing heading...")
@@ -356,16 +404,16 @@ def main():
     curvature = compute_curvature(heading, arc_length)
     print(f"  Smoothing curvature (window={CURVATURE_SMOOTH_WINDOW})...")
     curvature = smooth_values(curvature, window=CURVATURE_SMOOTH_WINDOW)
-    # Clamp curvature spikes to realistic maximum
+    # Safety cap
     clamped = sum(1 for k in curvature if abs(k) > CURVATURE_MAX)
     curvature = [max(-CURVATURE_MAX, min(CURVATURE_MAX, k)) for k in curvature]
     if clamped > 0:
-        print(f"  Clamped {clamped} curvature spikes to ±{CURVATURE_MAX}")
+        print(f"  Clamped {clamped} curvature values to ±{CURVATURE_MAX}")
 
     # Step 4: Corner detection
     print("Step 4: Detecting corners...")
-    corner_ids, is_corner, num_corners = detect_corners(curvature)
-    print(f"  {num_corners} corners detected (threshold={CURVATURE_THRESHOLD})")
+    corner_ids, is_corner, num_corners = detect_corners(curvature, arc_length)
+    print(f"  {num_corners} corners detected (threshold={CURVATURE_THRESHOLD}, min length={MIN_CORNER_LENGTH_M}m)")
 
     # Step 5: Corner phases
     print("Step 5: Assigning corner phases...")
