@@ -20,9 +20,13 @@ import json
 import sys
 import math
 
-MIN_SPEED_KMH = 80  # Discard samples below this speed (reduces noise from pit/crash/slow zones)
 EDGE_SHRINK_FACTOR = 0.9  # Shrink edges to remove runoff noise
 MAX_WIDTH_DELTA_M = 0.5  # Max half_width change per meter (anti-spike clamping)
+
+# Adaptive per-bin thresholds
+GOOD_COUNT = 20   # Bins with >= this many samples get tight filtering
+MIN_COUNT = 10    # Bins with >= this but < GOOD_COUNT get relaxed filtering
+                  # Bins below MIN_COUNT are interpolated from neighbors
 
 
 # ─── Phase 1: Load Samples ──────────────────────────────────────────────────
@@ -63,8 +67,6 @@ def load_all_samples(jsonl_paths):
                     track_id = meta.get('track_id')
 
                 speed = player.get('speed', 0)
-                if speed < MIN_SPEED_KMH:
-                    continue
 
                 all_samples.append({
                     'lap': player.get('lapNumber', 0),
@@ -74,7 +76,7 @@ def load_all_samples(jsonl_paths):
                     'source': path,
                 })
                 file_samples += 1
-        print(f"  {path}: {file_samples} samples (after speed filter >= {MIN_SPEED_KMH} km/h)")
+        print(f"  {path}: {file_samples} samples")
 
     return all_samples, track_length, track_id
 
@@ -284,6 +286,12 @@ def percentile(sorted_values, p):
 DEFAULT_HALF_WIDTH = 7.0  # fallback for bins with too few samples
 
 
+CONF_HIGH = 'HIGH'
+CONF_MEDIUM = 'MEDIUM'
+CONF_LOW = 'LOW'
+CONF_INTERPOLATED = 'INTERPOLATED'
+
+
 def remove_outliers_weighted(lateral_weight_pairs, sigma=2.0):
     """Remove samples more than sigma std devs from the weighted mean.
 
@@ -323,39 +331,70 @@ def weighted_percentile(sorted_pairs, p):
     return sorted_pairs[-1][0]
 
 
-def detect_edges(offsets_by_bin, n_bins):
-    """Compute left/right edges per bin using outlier removal + weighted percentiles.
+def detect_edges_adaptive(offsets_by_bin, n_bins):
+    """Compute left/right edges per bin using adaptive filtering by sample density.
 
-    Pipeline per bin:
-      1. Remove outliers (2-sigma, weighted)
-      2. Weighted percentile clipping (15th/85th)
-    Returns (left_edges, right_edges) arrays.
+    Three confidence tiers:
+      - HIGH (>= GOOD_COUNT samples): speed >= 60, 2-sigma outlier, 15/85 percentile
+      - MEDIUM (>= MIN_COUNT samples): speed >= 40, 2.5-sigma outlier, 10/90 percentile
+      - LOW (< MIN_COUNT samples): marked for interpolation
+
+    Returns (left_edges, right_edges, confidence, bin_stats) arrays.
     """
     left_edges = [0.0] * n_bins
     right_edges = [0.0] * n_bins
-    good_bins = 0
+    confidence = [CONF_LOW] * n_bins
+    bin_stats = []  # (count, mean_speed, width) per bin
+    counts = {'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
 
     for i in range(n_bins):
         raw_pairs = offsets_by_bin.get(i, [])
-        if len(raw_pairs) < 5:
-            left_edges[i] = -DEFAULT_HALF_WIDTH
-            right_edges[i] = DEFAULT_HALF_WIDTH
+        count = len(raw_pairs)
+
+        if count < MIN_COUNT:
+            # Case C: very weak data — mark for interpolation
+            left_edges[i] = 0.0
+            right_edges[i] = 0.0
+            confidence[i] = CONF_LOW
+            counts['LOW'] += 1
+            mean_spd = sum(w for _, w in raw_pairs) / count if count > 0 else 0
+            bin_stats.append((count, mean_spd, 0.0))
             continue
 
-        # Step 1: Remove outliers (2-sigma, weighted)
-        cleaned = remove_outliers_weighted(raw_pairs, sigma=2.0)
+        if count >= GOOD_COUNT:
+            # Case A: good data — tight filtering
+            filtered = [(v, w) for v, w in raw_pairs if w >= 60]
+            if len(filtered) < MIN_COUNT:
+                filtered = raw_pairs  # fallback if too few pass speed filter
+            sigma = 2.0
+            pct_left, pct_right = 15, 85
+            conf = CONF_HIGH
+        else:
+            # Case B: weak data — relaxed filtering
+            filtered = [(v, w) for v, w in raw_pairs if w >= 40]
+            if len(filtered) < 5:
+                filtered = raw_pairs
+            sigma = 2.5
+            pct_left, pct_right = 10, 90
+            conf = CONF_MEDIUM
+
+        # Outlier removal
+        cleaned = remove_outliers_weighted(filtered, sigma=sigma)
         if len(cleaned) < 3:
-            left_edges[i] = -DEFAULT_HALF_WIDTH
-            right_edges[i] = DEFAULT_HALF_WIDTH
+            left_edges[i] = 0.0
+            right_edges[i] = 0.0
+            confidence[i] = CONF_LOW
+            counts['LOW'] += 1
+            mean_spd = sum(w for _, w in raw_pairs) / count
+            bin_stats.append((count, mean_spd, 0.0))
             continue
 
-        # Sort by lateral value for percentile calculation
+        # Weighted percentile
         sorted_pairs = sorted(cleaned, key=lambda x: x[0])
-
-        # Step 2: Weighted percentile clipping (15th/85th)
-        left_edges[i] = weighted_percentile(sorted_pairs, 15)
-        right_edges[i] = weighted_percentile(sorted_pairs, 85)
-        good_bins += 1
+        left_edges[i] = weighted_percentile(sorted_pairs, pct_left)
+        right_edges[i] = weighted_percentile(sorted_pairs, pct_right)
+        confidence[i] = conf
+        counts[conf] += 1
 
         # Sanity: ensure edges are separated
         if right_edges[i] - left_edges[i] < 4.0:
@@ -363,8 +402,63 @@ def detect_edges(offsets_by_bin, n_bins):
             left_edges[i] = mid - DEFAULT_HALF_WIDTH
             right_edges[i] = mid + DEFAULT_HALF_WIDTH
 
-    print(f"  Bins with enough data: {good_bins}/{n_bins}")
-    return left_edges, right_edges
+        mean_spd = sum(w for _, w in raw_pairs) / count
+        width = right_edges[i] - left_edges[i]
+        bin_stats.append((count, mean_spd, width))
+
+    print(f"  Confidence: HIGH={counts['HIGH']}, MEDIUM={counts['MEDIUM']}, LOW={counts['LOW']}")
+    return left_edges, right_edges, confidence, bin_stats
+
+
+def interpolate_low_confidence_bins(left_edges, right_edges, confidence, n_bins):
+    """Interpolate LOW_CONFIDENCE bins from nearest valid (HIGH/MEDIUM) neighbors.
+
+    Uses linear interpolation (lerp) with circular wrapping.
+    """
+    interpolated = 0
+
+    for i in range(n_bins):
+        if confidence[i] != CONF_LOW:
+            continue
+
+        # Find nearest valid neighbor before (j) and after (k)
+        j = None
+        for step in range(1, n_bins):
+            idx = (i - step) % n_bins
+            if confidence[idx] in (CONF_HIGH, CONF_MEDIUM):
+                j = idx
+                break
+
+        k = None
+        for step in range(1, n_bins):
+            idx = (i + step) % n_bins
+            if confidence[idx] in (CONF_HIGH, CONF_MEDIUM):
+                k = idx
+                break
+
+        if j is None or k is None:
+            # No valid neighbors at all — use default
+            left_edges[i] = -DEFAULT_HALF_WIDTH
+            right_edges[i] = DEFAULT_HALF_WIDTH
+            confidence[i] = CONF_INTERPOLATED
+            interpolated += 1
+            continue
+
+        # Compute circular distances
+        dist_j_to_i = (i - j) % n_bins
+        dist_j_to_k = (k - j) % n_bins
+        if dist_j_to_k == 0:
+            t = 0.0
+        else:
+            t = dist_j_to_i / dist_j_to_k
+
+        left_edges[i] = left_edges[j] + t * (left_edges[k] - left_edges[j])
+        right_edges[i] = right_edges[j] + t * (right_edges[k] - right_edges[j])
+        confidence[i] = CONF_INTERPOLATED
+        interpolated += 1
+
+    print(f"  Interpolated {interpolated} low-confidence bins")
+    return left_edges, right_edges, confidence
 
 
 # ─── Phase 6: Compute True Centerline ───────────────────────────────────────
@@ -580,32 +674,46 @@ def main():
     total_offsets = sum(len(v) for v in offsets_by_bin.values())
     print(f"  Total offset measurements: {total_offsets}")
 
-    # Phase 5: Edge detection (outlier removal + 15th/85th percentile)
-    print("\nDetecting track edges (2-sigma outlier removal + 15th/85th percentile)...")
-    left_edges, right_edges = detect_edges(offsets_by_bin, n_points)
+    # Phase 5: Adaptive edge detection (3-tier confidence)
+    print("\nDetecting track edges (adaptive filtering)...")
+    left_edges, right_edges, confidence, bin_stats = detect_edges_adaptive(
+        offsets_by_bin, n_points)
 
-    # Phase 5b: Smooth edges BEFORE computing centerline (critical for clean edges)
+    # Phase 5b: Interpolate low-confidence bins from neighbors
+    print("Interpolating low-confidence bins...")
+    left_edges, right_edges, confidence = interpolate_low_confidence_bins(
+        left_edges, right_edges, confidence, n_points)
+
+    # Phase 5c: Smooth edges AFTER interpolation (critical ordering)
     print("Smoothing edges (window=15)...")
     left_edges = smooth_values(left_edges, window=15)
     right_edges = smooth_values(right_edges, window=15)
 
-    # Phase 6: True centerline from smoothed edges
+    # Phase 5d: Clamp width change rate (max 0.5m per step, anti-spike)
+    print("Clamping width changes (max delta = {:.1f}m/step)...".format(MAX_WIDTH_DELTA_M))
+    widths = [right_edges[i] - left_edges[i] for i in range(n_points)]
+    for i in range(1, n_points):
+        delta = widths[i] - widths[i - 1]
+        if abs(delta) > MAX_WIDTH_DELTA_M:
+            widths[i] = widths[i - 1] + math.copysign(MAX_WIDTH_DELTA_M, delta)
+            # Recompute edges around center
+            center = (left_edges[i] + right_edges[i]) / 2.0
+            left_edges[i] = center - widths[i] / 2.0
+            right_edges[i] = center + widths[i] / 2.0
+    # Wrap: clamp last->first transition
+    delta = widths[0] - widths[-1]
+    if abs(delta) > MAX_WIDTH_DELTA_M:
+        widths[0] = widths[-1] + math.copysign(MAX_WIDTH_DELTA_M, delta)
+        center = (left_edges[0] + right_edges[0]) / 2.0
+        left_edges[0] = center - widths[0] / 2.0
+        right_edges[0] = center + widths[0] / 2.0
+
+    # Phase 6: True centerline from cleaned edges
     print("\nComputing true centerline...")
     center_u, center_v, half_widths = compute_true_centerline(
         ref_u, ref_v, normals_u, normals_v, left_edges, right_edges)
 
-    # Phase 6b: Clamp width changes (max 0.5m per step, anti-spike)
-    print("Clamping width changes (max delta = {:.1f}m/step)...".format(MAX_WIDTH_DELTA_M))
-    for i in range(1, len(half_widths)):
-        delta = half_widths[i] - half_widths[i - 1]
-        if abs(delta) > MAX_WIDTH_DELTA_M:
-            half_widths[i] = half_widths[i - 1] + math.copysign(MAX_WIDTH_DELTA_M, delta)
-    # Wrap: clamp last->first transition
-    delta = half_widths[0] - half_widths[-1]
-    if abs(delta) > MAX_WIDTH_DELTA_M:
-        half_widths[0] = half_widths[-1] + math.copysign(MAX_WIDTH_DELTA_M, delta)
-
-    # Phase 6c: Edge shrink (remove runoff noise)
+    # Phase 6b: Edge shrink (remove runoff noise)
     print(f"Shrinking edges (factor={EDGE_SHRINK_FACTOR})...")
     half_widths = [hw * EDGE_SHRINK_FACTOR for hw in half_widths]
 
@@ -613,6 +721,19 @@ def main():
     print("Smoothing centerline (window=10)...")
     center_u = smooth_values(center_u, window=10)
     center_v = smooth_values(center_v, window=10)
+
+    # Debug: per-bin confidence summary
+    print("\nBin confidence debug:")
+    for conf_type in [CONF_HIGH, CONF_MEDIUM, CONF_INTERPOLATED, CONF_LOW]:
+        indices = [i for i in range(n_points) if confidence[i] == conf_type]
+        if indices:
+            print(f"  {conf_type}: {len(indices)} bins")
+            if bin_stats:
+                valid_stats = [bin_stats[i] for i in indices if i < len(bin_stats)]
+                if valid_stats:
+                    avg_count = sum(s[0] for s in valid_stats) / len(valid_stats)
+                    avg_speed = sum(s[1] for s in valid_stats) / len(valid_stats)
+                    print(f"    avg samples/bin={avg_count:.1f}, avg speed={avg_speed:.0f} km/h")
 
     # Close the loop
     center_u, center_v = close_loop(center_u, center_v)
