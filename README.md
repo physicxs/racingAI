@@ -2,7 +2,7 @@
 
 A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry data.
 
-**Status:** ✅ Complete | All 20 development phases finished | 21 unit tests passing
+**Status:** ✅ Complete | All 21 development phases finished | 21 unit tests passing
 
 ## Quick Start
 
@@ -56,7 +56,6 @@ This project handles telemetry data ingestion from F1 2025 via UDP, providing a 
 
 ### Out of Scope
 - Racing AI or decision-making logic
-- Coaching or strategy recommendations
 - Machine learning or predictive analytics
 
 ## Requirements
@@ -159,6 +158,7 @@ See [TESTING.md](TESTING.md) for complete testing instructions including:
 - [x] **Phase 18:** Spline Rendering Pipeline (spline-derived normals stored in map, renderer uses pre-computed normals, edge symmetry validation)
 - [x] **Phase 19:** Track Intelligence (per-point curvature, corner detection with entry/apex/exit phases, physics-based target speed with braking constraint)
 - [x] **Phase 20:** Player vs Track Analysis (per-corner entry/apex/exit scoring, speed delta analysis, lateral offset detection, driving error classification)
+- [x] **Phase 21:** Target Speed Calibration & Coaching (data-driven reference speeds from telemetry, per-corner coaching report with entry/apex/exit feedback, noise deadzone)
 
 ## Output Format
 

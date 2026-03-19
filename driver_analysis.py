@@ -143,48 +143,93 @@ def analyze(intel_path, telemetry_path):
         print("ERROR: No valid frames found.")
         return None
 
-    # Step 1 & 2: Map each frame to track and compute features
-    print("\nStep 1-2: Mapping frames to track and computing features...")
-    frame_data = []
+    # Step 1: Map each frame to track position
+    print("\nStep 1: Mapping frames to track...")
+    raw_frame_data = []
     prev_idx = 0
 
     for frame in valid_frames:
         player = frame['player']
         world_pos = player['world_pos_m']
 
-        # Map world coordinates to track 2D (u=x, v=z)
         car_u = world_pos[u_axis]
         car_v = world_pos[v_axis]
 
-        # Get search hint from lapDistance
         lap_dist = player.get('lapDistance', 0)
         hint = map_lap_distance_to_index(lap_dist, intel_points, total_arc)
 
-        # Find nearest track point
         idx = find_nearest_track_index(car_u, car_v, us, vs, hint, n)
         prev_idx = idx
 
         tp = intel_points[idx]
 
-        # Lateral offset
         lateral = compute_lateral_offset(car_u, car_v, tp['u'], tp['v'], tp['heading'])
-
-        # Speed delta (telemetry speed is km/h, target_speed is m/s)
         player_speed_ms = player['speed'] / 3.6
-        speed_delta = player_speed_ms - tp['target_speed']
 
-        frame_data.append({
+        raw_frame_data.append({
             'track_idx': idx,
             's': tp['s'],
             'corner_id': tp['corner_id'],
             'corner_phase': tp['corner_phase'],
             'lateral_offset': lateral,
-            'speed_delta': speed_delta,
             'player_speed_ms': player_speed_ms,
-            'target_speed_ms': tp['target_speed'],
             'throttle': player.get('throttle', 0),
             'brake': player.get('brake', 0),
             'lap_number': player.get('lapNumber', 0),
+        })
+
+    # Step 1b: Build data-driven reference speeds (90th percentile per corner/phase)
+    print("Step 1b: Computing data-driven reference speeds...")
+    corner_phase_speeds = defaultdict(lambda: defaultdict(list))
+    for fd in raw_frame_data:
+        cid = fd['corner_id']
+        if cid >= 0:
+            corner_phase_speeds[cid][fd['corner_phase']].append(fd['player_speed_ms'])
+
+    REFERENCE_PERCENTILE = 75  # 75th pct — representative of good performance
+
+    def percentile(values, pct):
+        """Compute percentile from sorted values."""
+        s = sorted(values)
+        k = (len(s) - 1) * pct / 100.0
+        f = int(k)
+        c = f + 1 if f + 1 < len(s) else f
+        d = k - f
+        return s[f] + d * (s[c] - s[f])
+
+    corner_targets = {}
+    for cid in sorted(corner_phase_speeds.keys()):
+        phases = corner_phase_speeds[cid]
+        targets = {}
+        for phase in ('entry', 'apex', 'exit'):
+            speeds = phases.get(phase, [])
+            if speeds:
+                targets[f'{phase}_speed'] = round(percentile(speeds, REFERENCE_PERCENTILE), 2)
+            else:
+                targets[f'{phase}_speed'] = 0.0
+        corner_targets[cid] = targets
+
+    for cid, t in corner_targets.items():
+        print(f"  Corner {cid}: entry={t['entry_speed']:.1f} apex={t['apex_speed']:.1f} exit={t['exit_speed']:.1f} m/s")
+
+    # Step 2: Compute speed deltas against data-driven references
+    print("Step 2: Computing features with data-driven targets...")
+    frame_data = []
+    for fd in raw_frame_data:
+        cid = fd['corner_id']
+        phase = fd['corner_phase']
+
+        # Use data-driven reference if available, else fall back to 0 (no penalty)
+        ref_speed = 0.0
+        if cid >= 0 and cid in corner_targets:
+            ref_speed = corner_targets[cid].get(f'{phase}_speed', 0.0)
+
+        speed_delta = fd['player_speed_ms'] - ref_speed if ref_speed > 0 else 0.0
+
+        frame_data.append({
+            **fd,
+            'speed_delta': speed_delta,
+            'target_speed_ms': ref_speed,
         })
 
     # Validate mapping
@@ -198,7 +243,7 @@ def analyze(intel_path, telemetry_path):
     print(f"  Large index jumps (>50): {jumps}")
 
     # Step 3: Group frames by corner
-    print("Step 3: Grouping frames by corner...")
+    print("\nStep 3: Grouping frames by corner...")
     corner_frames = defaultdict(list)
     for fd in frame_data:
         cid = fd['corner_id']
@@ -207,8 +252,8 @@ def analyze(intel_path, telemetry_path):
 
     print(f"  Corners with data: {len(corner_frames)}/{num_corners}")
 
-    # Step 4-6: Detect errors, compute scores, aggregate
-    print("Step 4-6: Computing corner scores...")
+    # Step 4: Detect errors, compute scores, aggregate
+    print("Step 4: Computing corner scores...")
     corner_results = []
 
     for cid in sorted(corner_frames.keys()):
@@ -353,12 +398,16 @@ def analyze(intel_path, telemetry_path):
         print(f"  Score distribution: {len([s for s in all_scores if s == 100])} perfect, "
               f"{len([s for s in all_scores if s < 100])} penalized")
 
+    # Convert corner_targets keys to strings for JSON
+    corner_targets_json = {str(k): v for k, v in corner_targets.items()}
+
     return {
         'track_id': intel.get('track_id'),
         'telemetry_file': os.path.basename(telemetry_path),
         'total_frames': len(frames),
         'valid_frames': len(valid_frames),
         'corners_analyzed': len(corner_results),
+        'corner_targets': corner_targets_json,
         'corners': corner_results,
     }
 

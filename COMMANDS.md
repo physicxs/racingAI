@@ -45,7 +45,13 @@ This outputs `Track Map Builds/track_0_intelligence.json` with per-point curvatu
 ```
 This outputs `Track Map Builds/track_0_driver_analysis.json` with per-corner scores (entry/apex/exit), speed deltas, and lateral error.
 
-### Step 5: Use the track map
+### Step 5: Generate coaching report (optional)
+```bash
+python3 coaching_report.py "Track Map Builds/track_0_driver_analysis.json"
+```
+This outputs `Track Map Builds/track_0_coaching_report.json` with per-corner coaching feedback (braking, apex positioning, exit speed, throttle application).
+
+### Step 6: Use the track map
 Watch live with the GUI (also auto-records telemetry for replay):
 ```bash
 ./track_map_gui.sh "Track Map Builds/track_0_true_map.json"

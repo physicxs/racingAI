@@ -19,6 +19,7 @@ ENTRY_SPEED_DELTA = 5.0      # m/s
 APEX_LATERAL = 1.5           # meters (signed)
 EXIT_SPEED_DELTA = 5.0       # m/s
 EXIT_THROTTLE = 0.8
+NOISE_DEADZONE = 3.0         # m/s — ignore small speed fluctuations
 
 
 def generate_coaching(analysis_path):
@@ -37,20 +38,21 @@ def generate_coaching(analysis_path):
         # ── Entry ────────────────────────────────────────────────────
         entry_delta = corner['avg_entry_speed_delta']
 
-        if entry_delta < -ENTRY_SPEED_DELTA:
-            issues.append({
-                'phase': 'entry',
-                'type': 'early_braking',
-                'message': 'Braking too early',
-                'detail': f'Avg entry speed {abs(entry_delta):.1f} m/s below target',
-            })
-        elif entry_delta > ENTRY_SPEED_DELTA:
-            issues.append({
-                'phase': 'entry',
-                'type': 'late_braking',
-                'message': 'Braking too late',
-                'detail': f'Avg entry speed {entry_delta:.1f} m/s above target',
-            })
+        if abs(entry_delta) > NOISE_DEADZONE:
+            if entry_delta < -ENTRY_SPEED_DELTA:
+                issues.append({
+                    'phase': 'entry',
+                    'type': 'early_braking',
+                    'message': 'Braking too early',
+                    'detail': f'Avg entry speed {abs(entry_delta):.1f} m/s below target',
+                })
+            elif entry_delta > ENTRY_SPEED_DELTA:
+                issues.append({
+                    'phase': 'entry',
+                    'type': 'late_braking',
+                    'message': 'Braking too late',
+                    'detail': f'Avg entry speed {entry_delta:.1f} m/s above target',
+                })
 
         # ── Apex ─────────────────────────────────────────────────────
         apex_lateral = corner['avg_apex_lateral']
@@ -74,7 +76,7 @@ def generate_coaching(analysis_path):
         exit_delta = corner['avg_exit_speed_delta']
         exit_throttle = corner['avg_exit_throttle']
 
-        if exit_delta < -EXIT_SPEED_DELTA:
+        if abs(exit_delta) > NOISE_DEADZONE and exit_delta < -EXIT_SPEED_DELTA:
             issues.append({
                 'phase': 'exit',
                 'type': 'poor_exit_speed',
