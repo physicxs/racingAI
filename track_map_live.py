@@ -77,8 +77,57 @@ def load_track_map(path):
         src = "spline-derived" if has_spline_normals else "computed"
         print(f"[track_map] True centerline map loaded (per-point width, {src} normals)")
 
+    # Auto-load corner data from intelligence file if available
+    corners = []
+    track_id = data.get('track_id')
+    if track_id is not None:
+        intel_path = os.path.join(os.path.dirname(path), f"track_{track_id}_intelligence.json")
+        if os.path.exists(intel_path):
+            try:
+                with open(intel_path) as f:
+                    intel = json.load(f)
+                # Find apex midpoint for each corner
+                corner_apexes = {}
+                for p in intel['points']:
+                    cid = p.get('corner_id', -1)
+                    if cid >= 0 and p.get('corner_phase') == 'apex':
+                        if cid not in corner_apexes:
+                            corner_apexes[cid] = []
+                        corner_apexes[cid].append(p)
+                for cid in sorted(corner_apexes.keys()):
+                    pts = corner_apexes[cid]
+                    mid = pts[len(pts) // 2]
+                    heading = mid.get('heading', 0)
+                    # Normal perpendicular to heading
+                    nu_val = -math.sin(heading)
+                    nv_val = math.cos(heading)
+                    # Find nearest track map point for half_width
+                    # Use simple distance search
+                    best_hw = 5.0
+                    best_dist = float('inf')
+                    for k in range(0, n, max(1, n // 200)):
+                        du = us[k] - mid['u']
+                        dv = vs[k] - mid['v']
+                        d2 = du * du + dv * dv
+                        if d2 < best_dist:
+                            best_dist = d2
+                            best_hw = half_widths[k]
+                    # Place label outside the track edge
+                    label_offset = best_hw + 8.0  # meters beyond centerline
+                    # Curvature sign determines which side is "outside"
+                    curv = mid.get('curvature', 0)
+                    sign = 1.0 if curv >= 0 else -1.0
+                    corners.append({
+                        'id': cid,
+                        'u': mid['u'] + sign * nu_val * label_offset,
+                        'v': mid['v'] + sign * nv_val * label_offset,
+                    })
+                print(f"[track_map] Loaded {len(corners)} corner labels from intelligence")
+            except (json.JSONDecodeError, KeyError) as e:
+                print(f"[track_map] Warning: could not load corners from {intel_path}: {e}")
+
     return {
-        'track_id': data.get('track_id'),
+        'track_id': track_id,
         'track_length': data.get('track_length_m', len(points)),
         'u_axis': data.get('coordinate_axes', {}).get('u', 'u'),
         'v_axis': data.get('coordinate_axes', {}).get('v', 'v'),
@@ -89,6 +138,7 @@ def load_track_map(path):
         'half_widths': half_widths,
         'true_centerline': is_true,
         'num_points': len(points),
+        'corners': corners,
     }
 
 
@@ -796,6 +846,17 @@ class TrackMapApp:
             sx + r + 4, sy - r - 2, anchor='sw', fill=self.START_COLOR,
             font=('Courier', 9), text='S/F'
         )
+
+        # Corner number labels on track perimeter
+        corners = self.track_map.get('corners', [])
+        font_size = max(8, min(12, int(10 * min(self.transform.zoom, 3))))
+        for corner in corners:
+            cx, cy = self.transform.to_canvas(corner['u'], corner['v'])
+            self.canvas.create_text(
+                cx, cy, anchor='center', fill='#e0a040',
+                font=('Courier', font_size, 'bold'),
+                text=str(corner['id'] + 1)
+            )
 
     # ─── Stats Panel ─────────────────────────────────────────────────────
 
