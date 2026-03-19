@@ -520,6 +520,68 @@ def analyze(intel_path, telemetry_path):
         print(f"  Score distribution: {len([s for s in all_scores if s == 100])} perfect, "
               f"{len([s for s in all_scores if s < 100])} penalized")
 
+    # Step 5: Detect DRS zones from telemetry
+    print("\nStep 5: Detecting DRS zones...")
+    drs_zones_raw = []
+    prev_drs = 0
+    for frame in valid_frames:
+        player = frame['player']
+        drs_allowed = player.get('drsAllowed', 0)
+        lap_dist = player.get('lapDistance', 0)
+        lap_num = player.get('lapNumber', 0)
+        if lap_num < 2 or lap_dist < 0:
+            prev_drs = drs_allowed
+            continue
+        if drs_allowed == 1 and prev_drs == 0:
+            drs_zones_raw.append({'start': lap_dist, 'end': lap_dist, 'lap': lap_num})
+        elif drs_allowed == 1 and drs_zones_raw:
+            drs_zones_raw[-1]['end'] = lap_dist
+        prev_drs = drs_allowed
+
+    # Cluster zones across laps: group by start position (within 100m), keep only long zones
+    MIN_DRS_LENGTH = 50   # meters — filter out detection point flickers
+    MIN_DRS_SAMPLES = 2   # require zone seen on multiple laps
+    drs_clusters = []
+    for z in drs_zones_raw:
+        length = z['end'] - z['start']
+        if length < MIN_DRS_LENGTH:
+            continue
+        matched = False
+        for cluster in drs_clusters:
+            if abs(z['start'] - cluster['starts'][0]) < 100:
+                cluster['starts'].append(z['start'])
+                cluster['ends'].append(z['end'])
+                matched = True
+                break
+        if not matched:
+            drs_clusters.append({'starts': [z['start']], 'ends': [z['end']]})
+
+    # Average each cluster into a single zone, map to track indices
+    drs_zones = []
+    for cluster in [c for c in drs_clusters if len(c['starts']) >= MIN_DRS_SAMPLES]:
+        avg_start = sum(cluster['starts']) / len(cluster['starts'])
+        avg_end = sum(cluster['ends']) / len(cluster['ends'])
+        # Map lapDistance to track index
+        start_idx = int((avg_start / total_arc) * n) % n
+        end_idx = int((avg_end / total_arc) * n) % n
+        start_pt = intel_points[start_idx]
+        end_pt = intel_points[end_idx]
+        drs_zones.append({
+            'start_m': round(avg_start, 1),
+            'end_m': round(avg_end, 1),
+            'length_m': round(avg_end - avg_start, 1),
+            'start_u': start_pt['u'],
+            'start_v': start_pt['v'],
+            'end_u': end_pt['u'],
+            'end_v': end_pt['v'],
+            'start_idx': start_idx,
+            'end_idx': end_idx,
+            'samples': len(cluster['starts']),
+        })
+    print(f"  {len(drs_zones)} DRS zones detected")
+    for z in drs_zones:
+        print(f"    {z['start_m']:.0f}m – {z['end_m']:.0f}m ({z['length_m']:.0f}m, {z['samples']} samples)")
+
     # Convert corner_targets keys to strings for JSON
     corner_targets_json = {str(k): v for k, v in corner_targets.items()}
 
@@ -530,6 +592,7 @@ def analyze(intel_path, telemetry_path):
         'valid_frames': len(valid_frames),
         'corners_analyzed': len(corner_results),
         'corner_targets': corner_targets_json,
+        'drs_zones': drs_zones,
         'corners': corner_results,
     }
 
