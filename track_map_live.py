@@ -126,20 +126,6 @@ def load_track_map(path):
             except (json.JSONDecodeError, KeyError) as e:
                 print(f"[track_map] Warning: could not load corners from {intel_path}: {e}")
 
-    # Auto-load DRS zones from driver analysis file if available
-    drs_zones = []
-    if track_id is not None:
-        analysis_path = os.path.join(os.path.dirname(path), f"track_{track_id}_driver_analysis.json")
-        if os.path.exists(analysis_path):
-            try:
-                with open(analysis_path) as f:
-                    analysis = json.load(f)
-                drs_zones = analysis.get('drs_zones', [])
-                if drs_zones:
-                    print(f"[track_map] Loaded {len(drs_zones)} DRS zones from analysis")
-            except (json.JSONDecodeError, KeyError):
-                pass
-
     return {
         'track_id': track_id,
         'track_length': data.get('track_length_m', len(points)),
@@ -153,7 +139,6 @@ def load_track_map(path):
         'true_centerline': is_true,
         'num_points': len(points),
         'corners': corners,
-        'drs_zones': drs_zones,
     }
 
 
@@ -861,68 +846,6 @@ class TrackMapApp:
             sx + r + 4, sy - r - 2, anchor='sw', fill=self.START_COLOR,
             font=('Courier', 9), text='S/F'
         )
-
-        # DRS zones — green highlighted track segments with start/end markers
-        drs_zones = self.track_map.get('drs_zones', [])
-        for zone in drs_zones:
-            si = zone['start_idx']
-            ei = zone['end_idx']
-
-            # Build polygon for DRS zone segment
-            drs_left = []
-            drs_right = []
-            drs_step = max(1, (ei - si) // 50) if ei > si else 1
-            idx = si
-            while idx <= ei:
-                nu_d, nv_d = nus[idx], nvs[idx]
-                hw_d = hws[idx]
-                lu, lv = us[idx] - nu_d * hw_d, vs[idx] - nv_d * hw_d
-                ru, rv = us[idx] + nu_d * hw_d, vs[idx] + nv_d * hw_d
-                lcx, lcy = self.transform.to_canvas(lu, lv)
-                rcx, rcy = self.transform.to_canvas(ru, rv)
-                drs_left.extend([lcx, lcy])
-                drs_right.extend([rcx, rcy])
-                idx += drs_step
-            # Ensure we include the end point
-            if idx - drs_step != ei:
-                nu_d, nv_d = nus[ei], nvs[ei]
-                hw_d = hws[ei]
-                lu, lv = us[ei] - nu_d * hw_d, vs[ei] - nv_d * hw_d
-                ru, rv = us[ei] + nu_d * hw_d, vs[ei] + nv_d * hw_d
-                lcx, lcy = self.transform.to_canvas(lu, lv)
-                rcx, rcy = self.transform.to_canvas(ru, rv)
-                drs_left.extend([lcx, lcy])
-                drs_right.extend([rcx, rcy])
-
-            if len(drs_left) >= 4:
-                rev_right = []
-                for k in range(len(drs_right) - 2, -1, -2):
-                    rev_right.extend([drs_right[k], drs_right[k + 1]])
-                drs_poly = drs_left + rev_right
-                self.canvas.create_polygon(
-                    *drs_poly, fill='#1a3a1a', outline='', width=0
-                )
-
-            # Start marker (green circle + "DRS")
-            sx_d, sy_d = self.transform.to_canvas(zone['start_u'], zone['start_v'])
-            ex_d, ey_d = self.transform.to_canvas(zone['end_u'], zone['end_v'])
-            mr = max(3, int(4 * min(self.transform.zoom, 3)))
-            self.canvas.create_oval(
-                sx_d - mr, sy_d - mr, sx_d + mr, sy_d + mr,
-                fill='#00cc44', outline='#00cc44'
-            )
-            self.canvas.create_oval(
-                ex_d - mr, ey_d - mr, ex_d + mr, ey_d + mr,
-                fill='#00cc44', outline='#00cc44'
-            )
-            # DRS label at midpoint
-            mx = (sx_d + ex_d) / 2
-            my = (sy_d + ey_d) / 2
-            drs_font = max(7, min(10, int(9 * min(self.transform.zoom, 3))))
-            self.canvas.create_text(
-                mx, my - mr - 4, anchor='s', fill='#00cc44',
-                font=('Courier', drs_font, 'bold'), text='DRS'
-            )
 
         # Corner number labels on track perimeter
         corners = self.track_map.get('corners', [])
