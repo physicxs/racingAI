@@ -2,7 +2,7 @@
 
 A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry data.
 
-**Status:** ✅ Complete | All 21 development phases finished | 21 unit tests passing
+**Status:** ✅ Complete | All 22 development phases finished | 21 unit tests passing
 
 ## Quick Start
 
@@ -159,6 +159,7 @@ See [TESTING.md](TESTING.md) for complete testing instructions including:
 - [x] **Phase 19:** Track Intelligence (per-point curvature, corner detection with entry/apex/exit phases, physics-based target speed with braking constraint)
 - [x] **Phase 20:** Player vs Track Analysis (per-corner entry/apex/exit scoring, speed delta analysis, lateral offset detection, driving error classification)
 - [x] **Phase 21:** Target Speed Calibration & Coaching (data-driven reference speeds from telemetry, per-corner coaching report with entry/apex/exit feedback, noise deadzone)
+- [x] **Phase 22:** Corner Phase Segmentation Fix (telemetry-driven entry/apex/exit phases using brake/throttle/speed/steering, time-to-80%-throttle exit metric)
 
 ## Output Format
 

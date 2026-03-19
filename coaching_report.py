@@ -85,12 +85,22 @@ def generate_coaching(analysis_path):
             })
 
         if exit_throttle < EXIT_THROTTLE:
-            issues.append({
-                'phase': 'exit',
-                'type': 'late_throttle',
-                'message': 'Late throttle application',
-                'detail': f'Avg exit throttle {exit_throttle:.0%} (target ≥{EXIT_THROTTLE:.0%})',
-            })
+            # Use time_to_80_throttle if available for better detail
+            t80 = corner.get('time_to_80_throttle', -1)
+            if t80 >= 0:
+                issues.append({
+                    'phase': 'exit',
+                    'type': 'late_throttle',
+                    'message': 'Late throttle application',
+                    'detail': f'Avg exit throttle {exit_throttle:.0%}, time to 80% throttle: {t80:.2f}s',
+                })
+            else:
+                issues.append({
+                    'phase': 'exit',
+                    'type': 'late_throttle',
+                    'message': 'Late throttle application',
+                    'detail': f'Avg exit throttle {exit_throttle:.0%} (no 80% throttle reached)',
+                })
 
         # ── Summary ──────────────────────────────────────────────────
         if not issues:

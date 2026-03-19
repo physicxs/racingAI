@@ -175,11 +175,107 @@ def analyze(intel_path, telemetry_path):
             'player_speed_ms': player_speed_ms,
             'throttle': player.get('throttle', 0),
             'brake': player.get('brake', 0),
+            'steering': abs(player.get('steering', 0)),
             'lap_number': player.get('lapNumber', 0),
+            'session_time': frame.get('sessionTime', 0),
         })
 
-    # Step 1b: Build data-driven reference speeds (90th percentile per corner/phase)
-    print("Step 1b: Computing data-driven reference speeds...")
+    # Step 1b: Re-segment corner phases using telemetry signals
+    print("Step 1b: Re-segmenting corner phases from driver inputs...")
+
+    # Group frames by (corner_id, lap_number) to get individual passes
+    corner_passes = defaultdict(list)
+    for i, fd in enumerate(raw_frame_data):
+        cid = fd['corner_id']
+        if cid >= 0:
+            corner_passes[(cid, fd['lap_number'])].append(i)
+
+    BRAKE_THRESHOLD = 0.1
+    THROTTLE_START = 0.2
+    THROTTLE_STABLE = 0.8
+    APEX_WINDOW_FRAMES = 15  # ~0.5s at 30Hz
+
+    resegmented = 0
+    for (cid, lap), indices in corner_passes.items():
+        if len(indices) < 3:
+            continue
+
+        frames_slice = [raw_frame_data[i] for i in indices]
+        speeds = [f['player_speed_ms'] for f in frames_slice]
+        brakes = [f['brake'] for f in frames_slice]
+        throttles = [f['throttle'] for f in frames_slice]
+        steerings = [f['steering'] for f in frames_slice]
+
+        nf = len(frames_slice)
+
+        # --- Find entry start: first frame with brake > threshold ---
+        entry_start = None
+        for j in range(nf):
+            if brakes[j] > BRAKE_THRESHOLD:
+                entry_start = j
+                break
+
+        # --- Find apex: minimum speed point ---
+        min_speed_idx = speeds.index(min(speeds))
+
+        # --- Find entry end: min(speed local min, max steering) before apex ---
+        # Entry ends at the earlier of: speed minimum or max steering
+        entry_end = min_speed_idx  # default to speed minimum
+
+        if entry_start is not None:
+            # Look for max steering between entry_start and a bit past apex
+            search_end = min(min_speed_idx + 5, nf)
+            if entry_start < search_end:
+                steer_region = steerings[entry_start:search_end]
+                if steer_region:
+                    max_steer_local = entry_start + steer_region.index(max(steer_region))
+                    entry_end = min(entry_end, max_steer_local)
+
+            # Entry end must be after entry start
+            if entry_end <= entry_start:
+                entry_end = min_speed_idx
+
+        # --- Apex window: centered on min speed ---
+        apex_start = max(0, min_speed_idx - APEX_WINDOW_FRAMES)
+        apex_end = min(nf - 1, min_speed_idx + APEX_WINDOW_FRAMES)
+
+        # Ensure apex doesn't overlap with entry
+        if entry_start is not None:
+            apex_start = max(apex_start, entry_end)
+
+        # --- Find exit start: first frame after apex with throttle > 0.2 ---
+        exit_start = None
+        for j in range(apex_end, nf):
+            if throttles[j] > THROTTLE_START:
+                exit_start = j
+                break
+
+        # --- Find exit end: throttle stabilizes > 0.8, or corner ends ---
+        exit_end = nf - 1
+        if exit_start is not None:
+            for j in range(exit_start, nf):
+                if throttles[j] >= THROTTLE_STABLE:
+                    exit_end = j
+                    break
+
+        # --- Assign phases ---
+        for j, global_idx in enumerate(indices):
+            if entry_start is not None and j >= entry_start and j < apex_start:
+                raw_frame_data[global_idx]['corner_phase'] = 'entry'
+            elif j >= apex_start and j <= apex_end:
+                raw_frame_data[global_idx]['corner_phase'] = 'apex'
+            elif exit_start is not None and j >= exit_start and j <= exit_end:
+                raw_frame_data[global_idx]['corner_phase'] = 'exit'
+            else:
+                # Frames outside defined phases (pre-braking, post-exit)
+                # Keep geometry phase as fallback
+                pass
+            resegmented += 1
+
+    print(f"  Re-segmented {resegmented} frames across {len(corner_passes)} corner passes")
+
+    # Step 1c: Build data-driven reference speeds
+    print("Step 1c: Computing data-driven reference speeds...")
     corner_phase_speeds = defaultdict(lambda: defaultdict(list))
     for fd in raw_frame_data:
         cid = fd['corner_id']
@@ -342,6 +438,24 @@ def analyze(intel_path, telemetry_path):
         exit_throttles = [f['throttle'] for f in exit_frames]
         avg_exit_throttle = sum(exit_throttles) / len(exit_throttles) if exit_throttles else 1.0
 
+        # Time to 80% throttle: per-pass, then average
+        # Group exit frames by lap to compute per-pass
+        exit_by_lap = defaultdict(list)
+        for f in exit_frames:
+            exit_by_lap[f['lap_number']].append(f)
+
+        t80_values = []
+        for lap_frames in exit_by_lap.values():
+            if not lap_frames:
+                continue
+            t_start = lap_frames[0]['session_time']
+            for f in lap_frames:
+                if f['throttle'] >= 0.8:
+                    t80_values.append(f['session_time'] - t_start)
+                    break
+
+        avg_time_to_80 = sum(t80_values) / len(t80_values) if t80_values else -1.0
+
         corner_results.append({
             'corner_id': cid,
             'entry_score': entry_score,
@@ -353,6 +467,7 @@ def analyze(intel_path, telemetry_path):
             'avg_apex_lateral': round(avg_apex_lateral, 2),
             'avg_exit_speed_delta': round(avg_exit_speed_delta, 2),
             'avg_exit_throttle': round(avg_exit_throttle, 3),
+            'time_to_80_throttle': round(avg_time_to_80, 3),
             'frames': len(cframes),
             'entry_frames': len(entry_frames),
             'apex_frames': len(apex_frames),
