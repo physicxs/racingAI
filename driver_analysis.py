@@ -193,7 +193,6 @@ def analyze(intel_path, telemetry_path):
     BRAKE_THRESHOLD = 0.1
     THROTTLE_START = 0.2
     THROTTLE_STABLE = 0.8
-    APEX_WINDOW_FRAMES = 15  # ~0.5s at 30Hz
 
     resegmented = 0
     for (cid, lap), indices in corner_passes.items():
@@ -235,9 +234,17 @@ def analyze(intel_path, telemetry_path):
             if entry_end <= entry_start:
                 entry_end = min_speed_idx
 
-        # --- Apex window: centered on min speed ---
-        apex_start = max(0, min_speed_idx - APEX_WINDOW_FRAMES)
-        apex_end = min(nf - 1, min_speed_idx + APEX_WINDOW_FRAMES)
+        # --- Apex window: adaptive size based on corner speed ---
+        min_speed_kmh = speeds[min_speed_idx] * 3.6
+        if min_speed_kmh < 120:
+            apex_half = 12
+        elif min_speed_kmh > 180:
+            apex_half = 6
+        else:
+            apex_half = 8
+
+        apex_start = max(0, min_speed_idx - apex_half)
+        apex_end = min(nf - 1, min_speed_idx + apex_half)
 
         # Ensure apex doesn't overlap with entry
         if entry_start is not None:
