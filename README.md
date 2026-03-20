@@ -2,7 +2,7 @@
 
 A Java application for receiving, decoding, and streaming F1 2025 UDP telemetry data.
 
-**Status:** ✅ Complete | All 22 development phases finished | 21 unit tests passing
+**Status:** ✅ Complete | All 22 development phases finished | 51 validation tests passing
 
 ## Quick Start
 

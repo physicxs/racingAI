@@ -922,6 +922,131 @@ def test_group_11():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# GROUP 12 — OFF-TRACK & PROJECTION VALIDATION (real telemetry)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_group_12():
+    print("\n" + "=" * 60)
+    print("GROUP 12 — OFF-TRACK & PROJECTION VALIDATION")
+    print("=" * 60)
+
+    with open(TRACK_MAP_FILE) as f:
+        track_data = json.load(f)
+
+    points = track_data['points']
+    us = [p['u'] for p in points]
+    vs = [p['v'] for p in points]
+    half_widths = [p.get('half_width', 7.0) for p in points]
+    n = len(points)
+
+    TRACK_MARGIN = 2.0  # same as GUI
+
+    # Load telemetry and compute lateral offsets
+    print("\n[12.1] Off-Track False Positive Test (A10)")
+    frames = []
+    with open(TELEMETRY_FILE) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                frames.append(json.loads(line))
+
+    # Use intelligence for heading data
+    with open(INTEL_FILE) as f:
+        intel = json.load(f)
+    intel_points = intel['points']
+    total_arc = intel['total_arc_length_m']
+
+    sys.path.insert(0, '.')
+    from driver_analysis import compute_lateral_offset, find_nearest_track_index, \
+        map_lap_distance_to_index, build_track_index
+
+    i_us, i_vs = build_track_index(intel_points)
+    ni = len(intel_points)
+
+    total_valid = 0
+    off_track_count = 0
+    prev_idx = 0
+
+    for frame in frames:
+        player = frame.get('player')
+        if not player:
+            continue
+        wp = player.get('world_pos_m')
+        if not wp:
+            continue
+        lap_dist = player.get('lapDistance', 0)
+        lap_num = player.get('lapNumber', 0)
+        if lap_dist < 0 or lap_num < 2:
+            continue  # skip formation/warmup
+
+        car_u = wp['x']
+        car_v = wp['z']
+        hint = map_lap_distance_to_index(lap_dist, intel_points, total_arc)
+        idx = find_nearest_track_index(car_u, car_v, i_us, i_vs, hint, ni)
+        tp = intel_points[idx]
+
+        lateral = compute_lateral_offset(car_u, car_v, tp['u'], tp['v'], tp['heading'])
+
+        # Find corresponding track map half_width
+        map_idx = int((tp['s'] / total_arc) * n) % n
+        hw = half_widths[map_idx] + TRACK_MARGIN
+
+        total_valid += 1
+        if abs(lateral) > hw:
+            off_track_count += 1
+
+        prev_idx = idx
+
+    off_pct = (off_track_count / total_valid * 100) if total_valid > 0 else 0
+    print(f"  Valid frames: {total_valid}")
+    print(f"  Off-track frames: {off_track_count} ({off_pct:.1f}%)")
+
+    check("off-track < 10% on recorded session", off_pct < 10,
+          f"{off_pct:.1f}%")
+    check("off-track < 30% (width not critically narrow)", off_pct < 30,
+          f"{off_pct:.1f}%")
+
+    # Test A11: Projection Stability
+    print("\n[12.2] Projection Stability Test (A11)")
+    prev_idx = None
+    large_jumps = 0
+    total_transitions = 0
+
+    for frame in frames:
+        player = frame.get('player')
+        if not player:
+            continue
+        wp = player.get('world_pos_m')
+        if not wp:
+            continue
+        lap_dist = player.get('lapDistance', 0)
+        if lap_dist < 0:
+            continue
+
+        car_u = wp['x']
+        car_v = wp['z']
+        hint = map_lap_distance_to_index(lap_dist, intel_points, total_arc)
+        idx = find_nearest_track_index(car_u, car_v, i_us, i_vs, hint, ni)
+
+        if prev_idx is not None:
+            jump = abs(idx - prev_idx)
+            if jump > ni // 2:
+                jump = ni - jump  # wrap
+            total_transitions += 1
+            if jump > 15:  # matches GUI hysteresis threshold
+                large_jumps += 1
+
+        prev_idx = idx
+
+    jump_pct = (large_jumps / total_transitions * 100) if total_transitions > 0 else 0
+    print(f"  Frame transitions: {total_transitions}")
+    print(f"  Large jumps (>15 segments): {large_jumps} ({jump_pct:.2f}%)")
+
+    check("no segment jumps > 15 (snapping)", large_jumps == 0,
+          f"{large_jumps} jumps detected ({jump_pct:.2f}%)")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -947,6 +1072,7 @@ def main():
     test_group_9()
     test_group_10()
     test_group_11()
+    test_group_12()
 
     # Final summary
     print("\n" + "=" * 60)

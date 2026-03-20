@@ -281,6 +281,9 @@ def project_world_to_2d(track_map, world_pos):
     return u, v
 
 
+_prev_seg_idx = [None]  # mutable container for hysteresis tracking
+
+
 def compute_track_position(track_map, world_pos, lap_distance):
     """Compute car's 2D position using segment-based projection.
 
@@ -308,11 +311,14 @@ def compute_track_position(track_map, world_pos, lap_distance):
     if n < 2:
         return cu, cv, 0.0, False
 
-    # Search window around lapDistance for the nearest centerline segment
+    # Use previous segment as search center if available (hysteresis),
+    # otherwise fall back to lapDistance estimate
     center_idx = int(lap_distance % track_len)
     if center_idx >= n:
         center_idx = n - 1
-    search_radius = 50  # ±50 segments (~50m at 1m spacing)
+    if _prev_seg_idx[0] is not None:
+        center_idx = _prev_seg_idx[0]
+    search_radius = 15  # ±15 segments — tight window to prevent snapping
 
     best_dist_sq = float('inf')
     best_proj_u = cu
@@ -352,6 +358,17 @@ def compute_track_position(track_map, world_pos, lap_distance):
             best_proj_v = proj_v
             best_seg_idx = i
 
+    # Hysteresis: reject large jumps (Issue 2 — anti-snapping)
+    if _prev_seg_idx[0] is not None:
+        jump = abs(best_seg_idx - _prev_seg_idx[0])
+        if jump > n // 2:
+            jump = n - jump  # wrap-around
+        if jump > 15:
+            # Reject jump — use previous segment instead
+            best_seg_idx = _prev_seg_idx[0]
+
+    _prev_seg_idx[0] = best_seg_idx
+
     # Compute local track basis from best segment
     i = best_seg_idx
     i_next = (i + 1) % n
@@ -378,6 +395,10 @@ def compute_track_position(track_map, world_pos, lap_distance):
     # Per-point half_width (from true centerline maps) or global constant
     hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
 
+    # Curb tolerance + width margin buffer (Issues 1 & 3)
+    TRACK_MARGIN = 2.0  # meters — accounts for curbs and edge detection shrink
+    effective_hw = hw + TRACK_MARGIN
+
     # Clamp to 2x track width for display
     max_offset = hw * 2.0
     display_offset = max(-max_offset, min(max_offset, lateral_offset))
@@ -386,7 +407,7 @@ def compute_track_position(track_map, world_pos, lap_distance):
     pos_u = best_proj_u + right_u * display_offset
     pos_v = best_proj_v + right_v * display_offset
 
-    is_off_track = abs(lateral_offset) > hw
+    is_off_track = abs(lateral_offset) > effective_hw
     return pos_u, pos_v, lateral_offset, is_off_track
 
 
@@ -623,6 +644,10 @@ class TrackMapApp:
         self.debug = debug
         self.debug_frame_count = 0
         self.follow_player = False
+        # Collision/state tracking for Feature 2
+        self.prev_speed = 0
+        self.prev_g_lat = 0
+        self.collision_frames = 0  # frames remaining in collision state
         self.needs_redraw = False
         self.drag_start = None
         self.last_data = None
@@ -1296,13 +1321,53 @@ class TrackMapApp:
             cx, cy = self.transform.to_canvas(pu, pv)
             r = self.CAR_RADIUS
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
-            if p_off:
+
+            # Collision/state detection (Feature 2)
+            # RED: collision/spin — sudden decel or high lateral G
+            g_lat = player.get('gForceLateral', 0)
+            decel = self.prev_speed - speed  # km/h drop per frame
+            g_lat_spike = abs(g_lat) > 4.0
+            decel_spike = decel > 30  # >30 km/h in one frame
+            yaw_rate = player.get('yaw', 0)
+            spin = abs(yaw_rate) > 1.5 and speed < 50
+
+            if decel_spike or g_lat_spike or spin:
+                self.collision_frames = 30  # hold red for ~1 second
+
+            self.prev_speed = speed
+            self.prev_g_lat = g_lat
+
+            if self.collision_frames > 0:
+                self.collision_frames -= 1
                 self.canvas.itemconfig(self.car_marker,
-                                       fill='#ff9900', outline='#ffcc00')
+                                       fill='#ff0000', outline='#ff4444')
+            elif p_off:
+                self.canvas.itemconfig(self.car_marker,
+                                       fill='#ffcc00', outline='#ffee44')
             else:
                 self.canvas.itemconfig(self.car_marker,
-                                       fill=self.CAR_COLOR, outline='#ff6666')
+                                       fill='#ffffff', outline='#cccccc')
             self.canvas.tag_raise(self.car_marker)
+
+            # DRS indicator (Feature 1) — green ring when available, filled when deployed
+            drs_allowed = player.get('drsAllowed', 0)
+            drs_active = player.get('drs', 0)
+            drs_tag = 'drs_indicator'
+            self.canvas.delete(drs_tag)
+            if drs_active:
+                dr = r + 4
+                self.canvas.create_oval(
+                    cx - dr, cy - dr, cx + dr, cy + dr,
+                    fill='', outline='#00ff44', width=3, tags=drs_tag)
+                self.canvas.create_text(
+                    cx, cy - dr - 6, text='DRS', fill='#00ff44',
+                    font=('Courier', 8, 'bold'), anchor='s', tags=drs_tag)
+            elif drs_allowed:
+                dr = r + 4
+                self.canvas.create_oval(
+                    cx - dr, cy - dr, cx + dr, cy + dr,
+                    fill='', outline='#00aa33', width=2, dash=(3, 3),
+                    tags=drs_tag)
 
             # Debug validation: print lateral offsets every 30 frames (~3s)
             if self.debug:
