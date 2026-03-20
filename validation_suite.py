@@ -774,6 +774,154 @@ def test_group_10():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# GROUP 11 — FPS / THROUGHPUT VALIDATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_group_11():
+    print("\n" + "=" * 60)
+    print("GROUP 11 — FPS / THROUGHPUT VALIDATION")
+    print("=" * 60)
+
+    import io
+    import resource
+    sys.path.insert(0, '.')
+    from driver_analysis import analyze
+    from coaching_report import generate_coaching
+
+    # Find largest telemetry file
+    tel_dir = "telemetry"
+    tel_files = [os.path.join(tel_dir, f) for f in os.listdir(tel_dir) if f.endswith('.jsonl')]
+    largest = max(tel_files, key=os.path.getsize)
+    size_mb = os.path.getsize(largest) / (1024 * 1024)
+
+    # Count frames
+    frame_count = 0
+    with open(largest) as f:
+        for line in f:
+            if line.strip():
+                frame_count += 1
+
+    # Test 11.1: Raw Processing Speed
+    print(f"\n[11.1] Raw Processing Speed")
+    print(f"  Input: {largest} ({size_mb:.1f} MB, {frame_count} frames)")
+
+    old_stdout = sys.stdout
+    mem_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+    sys.stdout = io.StringIO()
+    t0 = time.time()
+    result = analyze(INTEL_FILE, largest)
+    t1 = time.time()
+    sys.stdout = old_stdout
+
+    elapsed = t1 - t0
+    fps = frame_count / elapsed if elapsed > 0 else 0
+    mem_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # macOS reports bytes, Linux reports KB
+    mem_delta_mb = abs(mem_after - mem_before) / (1024 * 1024)
+
+    print(f"  Runtime: {elapsed:.2f}s")
+    print(f"  FPS: {fps:.0f}")
+    print(f"  Memory delta: {mem_delta_mb:.1f} MB")
+
+    check("FPS ≥ 30 (real-time)", fps >= 30,
+          f"fps={fps:.0f}")
+    check("no crash during processing", result is not None)
+
+    # Test 11.2: End-to-End Pipeline (analysis → coaching)
+    print(f"\n[11.2] End-to-End Pipeline (analysis → coaching)")
+
+    sys.stdout = io.StringIO()
+    t0 = time.time()
+    result_e2e = analyze(INTEL_FILE, largest)
+    sys.stdout = old_stdout
+
+    # Write analysis to temp, then run coaching
+    tmp_analysis = '/tmp/test_e2e_analysis.json'
+    with open(tmp_analysis, 'w') as f:
+        json.dump(result_e2e, f)
+
+    coaching_result = generate_coaching(tmp_analysis)
+    t1 = time.time()
+
+    e2e_elapsed = t1 - t0
+    e2e_fps = frame_count / e2e_elapsed if e2e_elapsed > 0 else 0
+
+    print(f"  End-to-end runtime: {e2e_elapsed:.2f}s ({e2e_fps:.0f} fps)")
+
+    # Validate output integrity
+    corners = coaching_result.get('corners', [])
+    has_nan = False
+    has_null = False
+    for corner in corners:
+        if corner.get('corner_id') is None:
+            has_null = True
+        for issue in corner.get('issues', []):
+            for v in issue.values():
+                if isinstance(v, float) and v != v:
+                    has_nan = True
+
+    check("coaching output generated", len(corners) > 0,
+          f"{len(corners)} corners")
+    check("no NaN in coaching output", not has_nan)
+    check("no null corner IDs", not has_null)
+    check("all corners present in coaching",
+          coaching_result.get('corners_analyzed', 0) == result_e2e.get('corners_analyzed', 0),
+          f"coaching={coaching_result.get('corners_analyzed')}, analysis={result_e2e.get('corners_analyzed')}")
+
+    os.remove(tmp_analysis)
+
+    # Test 11.3: Stress Test (3x dataset)
+    print(f"\n[11.3] Stress Test (3x dataset)")
+    big_path = '/tmp/stress_test_3x.jsonl'
+
+    # Create 3x dataset
+    with open(big_path, 'w') as out:
+        for _ in range(3):
+            with open(largest) as inp:
+                for line in inp:
+                    out.write(line)
+
+    big_frames = frame_count * 3
+    big_size = os.path.getsize(big_path) / (1024 * 1024)
+    print(f"  Input: {big_size:.0f} MB, {big_frames} frames")
+
+    mem_before_stress = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+    sys.stdout = io.StringIO()
+    t0 = time.time()
+    result_stress = analyze(INTEL_FILE, big_path)
+    t1 = time.time()
+    sys.stdout = old_stdout
+
+    stress_elapsed = t1 - t0
+    stress_fps = big_frames / stress_elapsed if stress_elapsed > 0 else 0
+    mem_after_stress = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    stress_mem_mb = abs(mem_after_stress - mem_before_stress) / (1024 * 1024)
+
+    # Check linear scaling: 3x data should take roughly 2-5x time (some overhead ok)
+    scaling_ratio = stress_elapsed / elapsed if elapsed > 0 else 0
+
+    print(f"  Runtime: {stress_elapsed:.2f}s (scaling ratio: {scaling_ratio:.1f}x vs 1x)")
+    print(f"  FPS: {stress_fps:.0f}")
+    print(f"  Memory delta: {stress_mem_mb:.1f} MB")
+
+    check("stress FPS ≥ 30", stress_fps >= 30,
+          f"fps={stress_fps:.0f}")
+    check("no crash on 3x dataset", result_stress is not None)
+    check("linear scaling (ratio < 5x for 3x data)", scaling_ratio < 5.0,
+          f"ratio={scaling_ratio:.1f}x")
+
+    os.remove(big_path)
+
+    # Final metrics summary
+    print(f"\n  ─── Throughput Summary ───")
+    print(f"  1x: {frame_count} frames, {elapsed:.2f}s, {fps:.0f} fps")
+    print(f"  3x: {big_frames} frames, {stress_elapsed:.2f}s, {stress_fps:.0f} fps")
+    print(f"  E2E: {e2e_elapsed:.2f}s ({e2e_fps:.0f} fps)")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -798,6 +946,7 @@ def main():
     test_group_8()
     test_group_9()
     test_group_10()
+    test_group_11()
 
     # Final summary
     print("\n" + "=" * 60)
