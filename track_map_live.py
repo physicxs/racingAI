@@ -281,18 +281,32 @@ def project_world_to_2d(track_map, world_pos):
     return u, v
 
 
-_prev_seg_idx = [None]  # mutable container for hysteresis tracking
+class CarProjectionState:
+    """Per-car projection tracking for temporal continuity."""
+    __slots__ = ('prev_seg_idx', 'prev_u', 'prev_v')
+
+    def __init__(self):
+        self.prev_seg_idx = None
+        self.prev_u = None
+        self.prev_v = None
 
 
-def compute_track_position(track_map, world_pos, lap_distance):
+# Per-car state: keyed by car identifier ('player' or car index)
+_car_states = {}
+
+
+def _get_car_state(car_id):
+    if car_id not in _car_states:
+        _car_states[car_id] = CarProjectionState()
+    return _car_states[car_id]
+
+
+def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
+                           speed_kmh=0, dt=1/30):
     """Compute car's 2D position using segment-based projection.
 
-    Uses proper nearest-segment projection for accurate lateral offset,
-    rather than just using the lapDistance centerline point.
-
-    For each nearby centerline segment, projects the car onto it and selects
-    the segment with minimum perpendicular distance. Then computes a local
-    track basis (forward/right) and true lateral offset.
+    Uses proper nearest-segment projection for accurate lateral offset.
+    Per-car state tracking prevents cross-contamination between cars.
 
     Returns (u, v, lateral_offset, is_off_track).
     Falls back to centerline position if world_pos is unavailable.
@@ -311,14 +325,16 @@ def compute_track_position(track_map, world_pos, lap_distance):
     if n < 2:
         return cu, cv, 0.0, False
 
-    # Use previous segment as search center if available (hysteresis),
-    # otherwise fall back to lapDistance estimate
+    state = _get_car_state(car_id)
+
+    # Search center: prefer previous segment (temporal continuity),
+    # fall back to lapDistance estimate
     center_idx = int(lap_distance % track_len)
     if center_idx >= n:
         center_idx = n - 1
-    if _prev_seg_idx[0] is not None:
-        center_idx = _prev_seg_idx[0]
-    search_radius = 15  # ±15 segments — tight window to prevent snapping
+    if state.prev_seg_idx is not None:
+        center_idx = state.prev_seg_idx
+    search_radius = 10  # ±10 segments — tight window
 
     best_dist_sq = float('inf')
     best_proj_u = cu
@@ -329,7 +345,6 @@ def compute_track_position(track_map, world_pos, lap_distance):
         i = (center_idx + offset) % n
         i_next = (i + 1) % n
 
-        # Segment vector: v = P[i+1] - P[i]
         seg_u = us[i_next] - us[i]
         seg_v = vs[i_next] - vs[i]
         seg_len_sq = seg_u * seg_u + seg_v * seg_v
@@ -337,20 +352,28 @@ def compute_track_position(track_map, world_pos, lap_distance):
         if seg_len_sq < 1e-12:
             continue
 
-        # Project car onto segment: w = car - P[i], t = dot(w, v) / dot(v, v)
         wu = car_u - us[i]
         wv = car_v - vs[i]
         t = (wu * seg_u + wv * seg_v) / seg_len_sq
         t = max(0.0, min(1.0, t))
 
-        # Projection point on segment
         proj_u = us[i] + seg_u * t
         proj_v = vs[i] + seg_v * t
 
-        # Distance from car to projection
         du = car_u - proj_u
         dv = car_v - proj_v
         dist_sq = du * du + dv * dv
+
+        # Forward progression constraint: reject candidates that go
+        # backwards by more than 3 segments
+        if state.prev_seg_idx is not None:
+            delta = i - state.prev_seg_idx
+            if delta < -n // 2:
+                delta += n
+            elif delta > n // 2:
+                delta -= n
+            if delta < -3:
+                continue  # reject backward jump
 
         if dist_sq < best_dist_sq:
             best_dist_sq = dist_sq
@@ -358,16 +381,19 @@ def compute_track_position(track_map, world_pos, lap_distance):
             best_proj_v = proj_v
             best_seg_idx = i
 
-    # Hysteresis: reject large jumps (Issue 2 — anti-snapping)
-    if _prev_seg_idx[0] is not None:
-        jump = abs(best_seg_idx - _prev_seg_idx[0])
-        if jump > n // 2:
-            jump = n - jump  # wrap-around
-        if jump > 15:
-            # Reject jump — use previous segment instead
-            best_seg_idx = _prev_seg_idx[0]
+    # Physical plausibility: reject if projected movement exceeds 2x expected
+    if state.prev_seg_idx is not None and speed_kmh > 0:
+        expected_m = (speed_kmh / 3.6) * dt * 2.0  # 2x tolerance
+        seg_jump = best_seg_idx - state.prev_seg_idx
+        if seg_jump < -n // 2:
+            seg_jump += n
+        elif seg_jump > n // 2:
+            seg_jump -= n
+        projected_m = abs(seg_jump)  # ~1m per segment
+        if projected_m > max(expected_m, 5):
+            best_seg_idx = state.prev_seg_idx
 
-    _prev_seg_idx[0] = best_seg_idx
+    state.prev_seg_idx = best_seg_idx
 
     # Compute local track basis from best segment
     i = best_seg_idx
@@ -382,30 +408,36 @@ def compute_track_position(track_map, world_pos, lap_distance):
     fwd_u /= fwd_len
     fwd_v /= fwd_len
 
-    # Right vector = cross(forward, up) in 3D with Y-up, projected to X/Z plane
-    # Equivalent to 90° CW rotation in 2D: right = (-forward.v, forward.u)
     right_u = -fwd_v
     right_v = fwd_u
 
-    # True lateral offset = dot(car - projection, right)
+    # True lateral offset
     du = car_u - best_proj_u
     dv = car_v - best_proj_v
     lateral_offset = du * right_u + dv * right_v
 
-    # Per-point half_width (from true centerline maps) or global constant
+    # Per-point half_width
     hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
 
-    # Curb tolerance + width margin buffer (Issues 1 & 3)
-    TRACK_MARGIN = 2.0  # meters — accounts for curbs and edge detection shrink
+    # Curb tolerance + width margin buffer
+    TRACK_MARGIN = 2.0
     effective_hw = hw + TRACK_MARGIN
 
-    # Clamp to 2x track width for display
-    max_offset = hw * 2.0
+    # Clamp offset for display (safety cap at 1.5x half_width)
+    max_offset = hw * 1.5
     display_offset = max(-max_offset, min(max_offset, lateral_offset))
 
-    # Final position = projection + right * display_offset
+    # Final position with rendering interpolation (smoothing)
     pos_u = best_proj_u + right_u * display_offset
     pos_v = best_proj_v + right_v * display_offset
+
+    if state.prev_u is not None:
+        LERP = 0.3
+        pos_u = state.prev_u + LERP * (pos_u - state.prev_u)
+        pos_v = state.prev_v + LERP * (pos_v - state.prev_v)
+
+    state.prev_u = pos_u
+    state.prev_v = pos_v
 
     is_off_track = abs(lateral_offset) > effective_hw
     return pos_u, pos_v, lateral_offset, is_off_track
@@ -1262,7 +1294,8 @@ class TrackMapApp:
             # Follow player if enabled
             if self.follow_player:
                 pu, pv, _, _ = compute_track_position(
-                    self.track_map, player_world_pos, lap_dist)
+                    self.track_map, player_world_pos, lap_dist,
+                    car_id='player', speed_kmh=speed)
                 self.transform.center_on(pu, pv)
                 self.needs_redraw = True
 
@@ -1279,8 +1312,10 @@ class TrackMapApp:
                     car_dist = car.get('lapDistance', 0.0)
                     car_pos = car.get('position', 0)
                     car_world_pos = car.get('world_pos_m')
+                    car_speed = car.get('speed', 0)
                     cu, cv, car_lat, car_off = compute_track_position(
-                        self.track_map, car_world_pos, car_dist)
+                        self.track_map, car_world_pos, car_dist,
+                        car_id=f'car_{i}', speed_kmh=car_speed)
                     ccx, ccy = self.transform.to_canvas(cu, cv)
                     r = self.OTHER_CAR_RADIUS
                     self.canvas.coords(
@@ -1317,7 +1352,8 @@ class TrackMapApp:
 
             # Player position (with lateral offset from world coords)
             pu, pv, player_lat, p_off = compute_track_position(
-                self.track_map, player_world_pos, lap_dist)
+                self.track_map, player_world_pos, lap_dist,
+                car_id='player', speed_kmh=speed)
             cx, cy = self.transform.to_canvas(pu, pv)
             r = self.CAR_RADIUS
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
@@ -1369,10 +1405,15 @@ class TrackMapApp:
                     fill='', outline='#00aa33', width=2, dash=(3, 3),
                     tags=drs_tag)
 
-            # Debug validation: print lateral offsets every 30 frames (~3s)
+            # Debug validation: projection state logging
             if self.debug:
                 self.debug_frame_count += 1
                 if self.debug_frame_count % 30 == 1:
+                    ps = _get_car_state('player')
+                    hw = self.track_map['half_widths'][ps.prev_seg_idx] if ps.prev_seg_idx else 0
+                    print(f"[DEBUG] seg={ps.prev_seg_idx} lat={player_lat:+.1f}m"
+                          f" hw={hw:.1f}m off={p_off} spd={speed}",
+                          file=sys.stderr, flush=True)
                     wp = player_world_pos or {}
                     print(f"[DEBUG] Player P{position}: {player_lat:+.1f}m"
                           f"  world=({wp.get('x',0):.1f},{wp.get('z',0):.1f})"
