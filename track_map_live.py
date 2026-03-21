@@ -283,12 +283,14 @@ def project_world_to_2d(track_map, world_pos):
 
 class CarProjectionState:
     """Per-car projection tracking for temporal continuity."""
-    __slots__ = ('prev_seg_idx', 'prev_u', 'prev_v')
+    __slots__ = ('prev_seg_idx', 'prev_u', 'prev_v', 'prev_world_u', 'prev_world_v')
 
     def __init__(self):
         self.prev_seg_idx = None
-        self.prev_u = None
+        self.prev_u = None       # previous render position
         self.prev_v = None
+        self.prev_world_u = None  # previous world 2D position
+        self.prev_world_v = None
 
 
 # Per-car state: keyed by car identifier ('player' or car index)
@@ -301,44 +303,11 @@ def _get_car_state(car_id):
     return _car_states[car_id]
 
 
-def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
-                           speed_kmh=0, dt=1/30):
-    """Compute car's 2D position using segment-based projection.
-
-    Uses proper nearest-segment projection for accurate lateral offset.
-    Per-car state tracking prevents cross-contamination between cars.
-
-    Returns (u, v, lateral_offset, is_off_track).
-    Falls back to centerline position if world_pos is unavailable.
-    """
-    cu, cv = lookup_position(track_map, lap_distance)
-    projected = project_world_to_2d(track_map, world_pos)
-    if projected is None:
-        return cu, cv, 0.0, False
-
-    car_u, car_v = projected
-    us = track_map['us']
-    vs = track_map['vs']
-    n = track_map['num_points']
-    track_len = track_map['track_length']
-
-    if n < 2:
-        return cu, cv, 0.0, False
-
-    state = _get_car_state(car_id)
-
-    # Search center: prefer previous segment (temporal continuity),
-    # fall back to lapDistance estimate
-    center_idx = int(lap_distance % track_len)
-    if center_idx >= n:
-        center_idx = n - 1
-    if state.prev_seg_idx is not None:
-        center_idx = state.prev_seg_idx
-    search_radius = 10  # ±10 segments — tight window
-
+def _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius):
+    """Search for best segment projection within a window. Returns (seg_idx, proj_u, proj_v, dist_sq)."""
     best_dist_sq = float('inf')
-    best_proj_u = cu
-    best_proj_v = cv
+    best_proj_u = us[center_idx]
+    best_proj_v = vs[center_idx]
     best_seg_idx = center_idx
 
     for offset in range(-search_radius, search_radius + 1):
@@ -364,36 +333,93 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
         dv = car_v - proj_v
         dist_sq = du * du + dv * dv
 
-        # Forward progression constraint: reject candidates that go
-        # backwards by more than 3 segments
-        if state.prev_seg_idx is not None:
-            delta = i - state.prev_seg_idx
-            if delta < -n // 2:
-                delta += n
-            elif delta > n // 2:
-                delta -= n
-            if delta < -3:
-                continue  # reject backward jump
-
         if dist_sq < best_dist_sq:
             best_dist_sq = dist_sq
             best_proj_u = proj_u
             best_proj_v = proj_v
             best_seg_idx = i
 
-    # Physical plausibility: reject if projected movement exceeds 2x expected
-    if state.prev_seg_idx is not None and speed_kmh > 0:
-        expected_m = (speed_kmh / 3.6) * dt * 2.0  # 2x tolerance
-        seg_jump = best_seg_idx - state.prev_seg_idx
-        if seg_jump < -n // 2:
-            seg_jump += n
-        elif seg_jump > n // 2:
-            seg_jump -= n
-        projected_m = abs(seg_jump)  # ~1m per segment
-        if projected_m > max(expected_m, 5):
+    return best_seg_idx, best_proj_u, best_proj_v, best_dist_sq
+
+
+def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
+                           speed_kmh=0, dt=1/30, player_seg_idx=None):
+    """Compute car's 2D position using segment-based projection.
+
+    Per-car state tracking. Nearby cars use player_seg_idx as shared reference
+    for consistent side-by-side positioning.
+
+    Returns (u, v, lateral_offset, is_off_track).
+    """
+    state = _get_car_state(car_id)
+
+    # Fallback: if projection fails, return previous valid position
+    projected = project_world_to_2d(track_map, world_pos)
+    if projected is None:
+        if state.prev_u is not None:
+            return state.prev_u, state.prev_v, 0.0, False
+        cu, cv = lookup_position(track_map, lap_distance)
+        return cu, cv, 0.0, False
+
+    car_u, car_v = projected
+    us = track_map['us']
+    vs = track_map['vs']
+    n = track_map['num_points']
+    track_len = track_map['track_length']
+
+    if n < 2:
+        if state.prev_u is not None:
+            return state.prev_u, state.prev_v, 0.0, False
+        cu, cv = lookup_position(track_map, lap_distance)
+        return cu, cv, 0.0, False
+
+    # Determine search center
+    # Priority: previous segment > player reference > lapDistance estimate
+    center_idx = int(lap_distance % track_len)
+    if center_idx >= n:
+        center_idx = n - 1
+
+    if state.prev_seg_idx is not None:
+        center_idx = state.prev_seg_idx
+    elif player_seg_idx is not None:
+        # Nearby car with no history: anchor to player segment
+        center_idx = player_seg_idx
+
+    # Tight search: ±5 segments from center
+    search_radius = 5
+
+    # For nearby cars, also search around player segment for consistency
+    if player_seg_idx is not None and car_id != 'player':
+        # Check distance to player in world space
+        player_state = _get_car_state('player')
+        if player_state.prev_world_u is not None:
+            dx = car_u - player_state.prev_world_u
+            dy = car_v - player_state.prev_world_v
+            world_dist = math.sqrt(dx * dx + dy * dy)
+            if world_dist < 20:
+                # Close to player: use player segment as reference, wider search
+                center_idx = player_seg_idx
+                search_radius = 10
+
+    best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
+        _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius)
+
+    # Hard reject: if jump > 5 from previous, use previous
+    if state.prev_seg_idx is not None:
+        delta = best_seg_idx - state.prev_seg_idx
+        if delta < -n // 2:
+            delta += n
+        elif delta > n // 2:
+            delta -= n
+        if abs(delta) > 5:
             best_seg_idx = state.prev_seg_idx
+            # Re-project onto the kept segment
+            _, best_proj_u, best_proj_v, _ = \
+                _find_best_segment(car_u, car_v, us, vs, n, best_seg_idx, 0)
 
     state.prev_seg_idx = best_seg_idx
+    state.prev_world_u = car_u
+    state.prev_world_v = car_v
 
     # Compute local track basis from best segment
     i = best_seg_idx
@@ -403,6 +429,9 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     fwd_len = math.sqrt(fwd_u * fwd_u + fwd_v * fwd_v)
 
     if fwd_len < 1e-9:
+        if state.prev_u is not None:
+            return state.prev_u, state.prev_v, 0.0, False
+        cu, cv = lookup_position(track_map, lap_distance)
         return cu, cv, 0.0, False
 
     fwd_u /= fwd_len
@@ -411,7 +440,7 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     right_u = -fwd_v
     right_v = fwd_u
 
-    # True lateral offset
+    # Raw lateral offset — no scaling, no compression
     du = car_u - best_proj_u
     dv = car_v - best_proj_v
     lateral_offset = du * right_u + dv * right_v
@@ -419,27 +448,25 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     # Per-point half_width
     hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
 
-    # Curb tolerance + width margin buffer
+    # Off-track detection with curb margin
     TRACK_MARGIN = 2.0
     effective_hw = hw + TRACK_MARGIN
+    is_off_track = abs(lateral_offset) > effective_hw
 
-    # Clamp offset for display (safety cap at 1.5x half_width)
-    max_offset = hw * 1.5
-    display_offset = max(-max_offset, min(max_offset, lateral_offset))
+    # Final position: centerline projection + normal * raw offset
+    # No offset clamping — use true offset for accurate positioning
+    pos_u = best_proj_u + right_u * lateral_offset
+    pos_v = best_proj_v + right_v * lateral_offset
 
-    # Final position with rendering interpolation (smoothing)
-    pos_u = best_proj_u + right_u * display_offset
-    pos_v = best_proj_v + right_v * display_offset
-
+    # Render smoothing only (not on offset) — lerp on final position
     if state.prev_u is not None:
-        LERP = 0.3
+        LERP = 0.35
         pos_u = state.prev_u + LERP * (pos_u - state.prev_u)
         pos_v = state.prev_v + LERP * (pos_v - state.prev_v)
 
     state.prev_u = pos_u
     state.prev_v = pos_v
 
-    is_off_track = abs(lateral_offset) > effective_hw
     return pos_u, pos_v, lateral_offset, is_off_track
 
 
@@ -1229,46 +1256,44 @@ class TrackMapApp:
         # ── Mini Leaderboard ──
         nearby = data.get('nearbyCars', [])
         player_pos = player.get('position', 0)
+        player_lap_dist = player.get('lapDistance', 0)
 
         if nearby and player_pos > 0:
             c.create_text(w // 2, y, anchor='n', fill='#8888aa',
                           font=('Courier', 9, 'bold'), text='LEADERBOARD')
             y += 16
 
-            # Split into ahead (positive gap = behind us in time, but ahead on track)
-            # nearbyCars gap: positive = they are ahead, negative = behind
+            # Use position to determine ahead/behind (lower position = ahead)
+            # Use gap for display
             ahead = []
             behind = []
             for car in nearby:
                 car_pos = car.get('position', 0)
-                gap = car.get('gap', 0)
+                gap = abs(car.get('gap', 0))
                 if car_pos < player_pos:
-                    ahead.append(car)
+                    ahead.append({'position': car_pos, 'gap': gap})
                 elif car_pos > player_pos:
-                    behind.append(car)
+                    behind.append({'position': car_pos, 'gap': gap})
 
-            # Sort: ahead by position descending (closest first), behind ascending
-            ahead.sort(key=lambda c: c.get('position', 0), reverse=True)
-            behind.sort(key=lambda c: c.get('position', 0))
+            # Ahead: sorted by position descending (P3, P2, P1 style — closest first at bottom)
+            ahead.sort(key=lambda c: c['position'])
+            # Behind: sorted by position ascending (closest first)
+            behind.sort(key=lambda c: c['position'])
 
             # Take up to 3 each
             ahead = ahead[:3]
             behind = behind[:3]
 
-            # Reverse ahead so highest position (furthest ahead) is at top
-            ahead.reverse()
-
             row_h = 16
             font_lb = ('Courier', 8)
 
             for car in ahead:
-                pos = car.get('position', 0)
-                gap = car.get('gap', 0)
-                gap_str = f'+{abs(gap):.2f}' if gap >= 0 else f'-{abs(gap):.2f}'
+                pos = car['position']
+                gap = car['gap']
                 c.create_text(mx, y, anchor='w', fill='#888899',
                               font=font_lb, text=f'P{pos}')
                 c.create_text(w - mx, y, anchor='e', fill='#aaaacc',
-                              font=font_lb, text=gap_str)
+                              font=font_lb, text=f'+{gap:.2f}')
                 y += row_h
 
             # Player row
@@ -1281,13 +1306,12 @@ class TrackMapApp:
             y += row_h
 
             for car in behind:
-                pos = car.get('position', 0)
-                gap = car.get('gap', 0)
-                gap_str = f'-{abs(gap):.2f}' if gap >= 0 else f'+{abs(gap):.2f}'
+                pos = car['position']
+                gap = car['gap']
                 c.create_text(mx, y, anchor='w', fill='#888899',
                               font=font_lb, text=f'P{pos}')
                 c.create_text(w - mx, y, anchor='e', fill='#aaaacc',
-                              font=font_lb, text=gap_str)
+                              font=font_lb, text=f'-{gap:.2f}')
                 y += row_h
 
     # ─── Event Handlers ───────────────────────────────────────────────────
@@ -1398,19 +1422,22 @@ class TrackMapApp:
             # Player world position for lateral offset
             player_world_pos = player.get('world_pos_m')
 
+            # Compute player position FIRST (shared reference for nearby cars)
+            pu, pv, player_lat, p_off = compute_track_position(
+                self.track_map, player_world_pos, lap_dist,
+                car_id='player', speed_kmh=speed)
+
             # Follow player if enabled
             if self.follow_player:
-                pu, pv, _, _ = compute_track_position(
-                    self.track_map, player_world_pos, lap_dist,
-                    car_id='player', speed_kmh=speed)
                 self.transform.center_on(pu, pv)
                 self.needs_redraw = True
 
             # Redraw track if zoom/pan/resize changed
             if self.needs_redraw:
                 self._full_redraw()
+            player_seg = _get_car_state('player').prev_seg_idx
 
-            # Update other cars
+            # Update other cars (using player segment as reference)
             all_cars = data.get('allCars', [])
             debug_offsets = []
             for i in range(self.MAX_OTHER_CARS):
@@ -1422,7 +1449,8 @@ class TrackMapApp:
                     car_speed = car.get('speed', 0)
                     cu, cv, car_lat, car_off = compute_track_position(
                         self.track_map, car_world_pos, car_dist,
-                        car_id=f'car_{i}', speed_kmh=car_speed)
+                        car_id=f'car_{i}', speed_kmh=car_speed,
+                        player_seg_idx=player_seg)
                     ccx, ccy = self.transform.to_canvas(cu, cv)
                     r = self.OTHER_CAR_RADIUS
                     self.canvas.coords(
@@ -1447,6 +1475,7 @@ class TrackMapApp:
                     if self.debug and car_world_pos:
                         debug_offsets.append(
                             f"  Car P{car_pos}: {car_lat:+.1f}m"
+                            f"  seg={_get_car_state(f'car_{i}').prev_seg_idx}"
                             f"  world=({car_world_pos.get('x',0):.1f},"
                             f"{car_world_pos.get('z',0):.1f})"
                             f"  proj=({cu:.1f},{cv:.1f})")
@@ -1456,11 +1485,6 @@ class TrackMapApp:
                     )
                     self.canvas.coords(self.other_car_labels[i], -20, -20)
                     self.canvas.itemconfig(self.other_car_labels[i], text='')
-
-            # Player position (with lateral offset from world coords)
-            pu, pv, player_lat, p_off = compute_track_position(
-                self.track_map, player_world_pos, lap_dist,
-                car_id='player', speed_kmh=speed)
             cx, cy = self.transform.to_canvas(pu, pv)
             r = self.CAR_RADIUS
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
@@ -1518,9 +1542,15 @@ class TrackMapApp:
                 if self.debug_frame_count % 30 == 1:
                     ps = _get_car_state('player')
                     hw = self.track_map['half_widths'][ps.prev_seg_idx] if ps.prev_seg_idx else 0
-                    print(f"[DEBUG] seg={ps.prev_seg_idx} lat={player_lat:+.1f}m"
+                    print(f"[DEBUG] player seg={ps.prev_seg_idx} lat={player_lat:+.1f}m"
                           f" hw={hw:.1f}m off={p_off} spd={speed}",
                           file=sys.stderr, flush=True)
+                    # Log first 2 nearby cars
+                    for ci in range(min(2, len(all_cars))):
+                        cs = _get_car_state(f'car_{ci}')
+                        print(f"[DEBUG]   car_{ci} seg={cs.prev_seg_idx}"
+                              f" delta={cs.prev_seg_idx - ps.prev_seg_idx if cs.prev_seg_idx and ps.prev_seg_idx else '?'}",
+                              file=sys.stderr, flush=True)
                     wp = player_world_pos or {}
                     print(f"[DEBUG] Player P{position}: {player_lat:+.1f}m"
                           f"  world=({wp.get('x',0):.1f},{wp.get('z',0):.1f})"
