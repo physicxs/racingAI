@@ -101,6 +101,15 @@ public class PlayerData {
     private int[] brakeTemp;
 
     // Damage
+    @JsonProperty("frontLeftWingDamage")
+    private float frontLeftWingDamage;
+
+    @JsonProperty("frontRightWingDamage")
+    private float frontRightWingDamage;
+
+    @JsonProperty("rearWingDamage")
+    private float rearWingDamage;
+
     @JsonProperty("floorDamage")
     private int floorDamage;
 
@@ -217,6 +226,9 @@ public class PlayerData {
     public void setTyresAgeLaps(int a) { this.tyresAgeLaps = a; }
     public void setTyreDamage(int[] d) { this.tyreDamage = d; }
     public void setBrakeTemp(int[] t) { this.brakeTemp = t; }
+    public void setFrontLeftWingDamage(float d) { this.frontLeftWingDamage = d; }
+    public void setFrontRightWingDamage(float d) { this.frontRightWingDamage = d; }
+    public void setRearWingDamage(float d) { this.rearWingDamage = d; }
     public void setFloorDamage(int d) { this.floorDamage = d; }
     public void setDiffuserDamage(int d) { this.diffuserDamage = d; }
     public void setSidepodDamage(int d) { this.sidepodDamage = d; }

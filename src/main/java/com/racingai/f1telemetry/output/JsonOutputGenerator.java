@@ -172,6 +172,9 @@ public class JsonOutputGenerator {
         player.setBrakeTemp(brakeTemp.clone());
 
         // Damage
+        player.setFrontLeftWingDamage(playerCar.getFrontLeftWingDamage());
+        player.setFrontRightWingDamage(playerCar.getFrontRightWingDamage());
+        player.setRearWingDamage(playerCar.getRearWingDamage());
         player.setFloorDamage(playerCar.getFloorDamage());
         player.setDiffuserDamage(playerCar.getDiffuserDamage());
         player.setSidepodDamage(playerCar.getSidepodDamage());

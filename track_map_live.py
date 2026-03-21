@@ -1133,11 +1133,53 @@ class TrackMapApp:
                       text=f'{cname}  Age: {tyre_age} laps')
         y += 18
 
-        # ── Damage ──
+        # ── Front Wing Damage ──
+        fl_wing = player.get('frontLeftWingDamage', 0)
+        fr_wing = player.get('frontRightWingDamage', 0)
+        avg_wing = (fl_wing + fr_wing) / 2.0
+
+        c.create_text(w // 2, y, anchor='n', fill='#8888aa',
+                      font=('Courier', 9, 'bold'), text='FRONT WING')
+        y += 16
+
+        # Color coding: 0-10% green, 10-40% yellow, 40%+ red
+        if avg_wing <= 10:
+            wing_col = '#00cc44'
+        elif avg_wing <= 40:
+            wing_col = '#ffcc00'
+        else:
+            wing_col = '#ff3333'
+
+        # Bar
+        c.create_text(mx, y + bar_h // 2, anchor='w', fill='#666688',
+                      font=('Courier', 8), text='DMG')
+        wbx = mx + 30
+        wbw = w - wbx - mx
+        c.create_rectangle(wbx, y, wbx + wbw, y + bar_h,
+                           fill='#222240', outline='#333355', width=1)
+        fill_w = int(min(avg_wing / 100.0, 1.0) * wbw)
+        if fill_w > 0:
+            c.create_rectangle(wbx, y + 1, wbx + fill_w, y + bar_h - 1,
+                               fill=wing_col, outline='')
+        c.create_text(wbx + wbw + 4, y + bar_h // 2, anchor='w',
+                      fill='#888899', font=('Courier', 7),
+                      text=f'{avg_wing:.0f}%')
+        y += bar_h + 4
+
+        # L/R detail
+        c.create_text(mx + 10, y, anchor='w', fill='#777799',
+                      font=('Courier', 8), text=f'FL: {fl_wing:.0f}%')
+        c.create_text(w // 2 + 10, y, anchor='w', fill='#777799',
+                      font=('Courier', 8), text=f'FR: {fr_wing:.0f}%')
+        y += 16
+
+        # ── Other Damage ──
         c.create_text(w // 2, y, anchor='n', fill='#8888aa',
                       font=('Courier', 9, 'bold'), text='DAMAGE')
         y += 16
-        for lbl, val in [('Floor', player.get('floorDamage', 0)),
+        rear_wing = player.get('rearWingDamage', 0)
+        for lbl, val in [('R.Wing', rear_wing),
+                         ('Floor', player.get('floorDamage', 0)),
                          ('Diffuser', player.get('diffuserDamage', 0)),
                          ('Sidepod', player.get('sidepodDamage', 0))]:
             if val == 0:
@@ -1145,7 +1187,7 @@ class TrackMapApp:
                 dt = 'OK'
             else:
                 dc = '#ffcc00' if val < 50 else '#ff3333'
-                dt = f'{val}%'
+                dt = f'{val:.0f}%'
             c.create_text(mx + 10, y, anchor='w', fill='#777799',
                           font=('Courier', 8), text=f'{lbl}:')
             c.create_text(mx + 80, y, anchor='w', fill=dc,
@@ -1182,6 +1224,71 @@ class TrackMapApp:
         c.create_text(w // 2, y, anchor='n', fill='#555577',
                       font=('Courier', 8),
                       text=f'{weather_name}  Track:{track_temp}\u00b0C  Air:{air_temp}\u00b0C')
+        y += 18
+
+        # ── Mini Leaderboard ──
+        nearby = data.get('nearbyCars', [])
+        player_pos = player.get('position', 0)
+
+        if nearby and player_pos > 0:
+            c.create_text(w // 2, y, anchor='n', fill='#8888aa',
+                          font=('Courier', 9, 'bold'), text='LEADERBOARD')
+            y += 16
+
+            # Split into ahead (positive gap = behind us in time, but ahead on track)
+            # nearbyCars gap: positive = they are ahead, negative = behind
+            ahead = []
+            behind = []
+            for car in nearby:
+                car_pos = car.get('position', 0)
+                gap = car.get('gap', 0)
+                if car_pos < player_pos:
+                    ahead.append(car)
+                elif car_pos > player_pos:
+                    behind.append(car)
+
+            # Sort: ahead by position descending (closest first), behind ascending
+            ahead.sort(key=lambda c: c.get('position', 0), reverse=True)
+            behind.sort(key=lambda c: c.get('position', 0))
+
+            # Take up to 3 each
+            ahead = ahead[:3]
+            behind = behind[:3]
+
+            # Reverse ahead so highest position (furthest ahead) is at top
+            ahead.reverse()
+
+            row_h = 16
+            font_lb = ('Courier', 8)
+
+            for car in ahead:
+                pos = car.get('position', 0)
+                gap = car.get('gap', 0)
+                gap_str = f'+{abs(gap):.2f}' if gap >= 0 else f'-{abs(gap):.2f}'
+                c.create_text(mx, y, anchor='w', fill='#888899',
+                              font=font_lb, text=f'P{pos}')
+                c.create_text(w - mx, y, anchor='e', fill='#aaaacc',
+                              font=font_lb, text=gap_str)
+                y += row_h
+
+            # Player row
+            c.create_rectangle(mx - 2, y - 2, w - mx + 2, y + row_h - 2,
+                               fill='#2a2a4a', outline='#4444aa', width=1)
+            c.create_text(mx, y, anchor='w', fill='#ffffff',
+                          font=('Courier', 8, 'bold'), text=f'P{player_pos}')
+            c.create_text(w - mx, y, anchor='e', fill='#ffffff',
+                          font=('Courier', 8, 'bold'), text='YOU')
+            y += row_h
+
+            for car in behind:
+                pos = car.get('position', 0)
+                gap = car.get('gap', 0)
+                gap_str = f'-{abs(gap):.2f}' if gap >= 0 else f'+{abs(gap):.2f}'
+                c.create_text(mx, y, anchor='w', fill='#888899',
+                              font=font_lb, text=f'P{pos}')
+                c.create_text(w - mx, y, anchor='e', fill='#aaaacc',
+                              font=font_lb, text=gap_str)
+                y += row_h
 
     # ─── Event Handlers ───────────────────────────────────────────────────
 
