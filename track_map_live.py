@@ -549,13 +549,18 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     else:
         # Dead reckoning: predict forward motion from speed
         if state.prev_seg_idx is not None and speed_kmh > 0:
-            estimated_delta = (speed_kmh / 3.6) * dt  # meters
-            # ~1m per index at 1m spacing
+            speed_mps = speed_kmh / 3.6
+            estimated_delta = speed_mps * dt
+            estimated_delta = min(estimated_delta, 3.0)  # clamp to 3m max
             idx_advance = max(1, int(round(estimated_delta)))
             best_seg_idx = (state.prev_seg_idx + idx_advance) % n
             state.prev_seg_idx = best_seg_idx
         else:
             best_seg_idx = state.prev_seg_idx
+
+        # Consecutive fallback limit: force recovery after 3
+        if state.invalid_count > 3 and state.phase == _ST_TRACKING:
+            state.phase = _ST_UNSTABLE
 
         _, best_proj_u, best_proj_v, _ = \
             _find_best_segment(car_u, car_v, us, vs, n, best_seg_idx, 0)
@@ -860,6 +865,7 @@ class TrackMapApp:
         # Collision/state tracking for Feature 2
         self.prev_speed = 0
         self.prev_damage = 0      # previous total damage for change detection
+        self.prev_session_time = 0 # for real dt computation
         self.collision_frames = 0  # frames remaining in collision state
         self.speed_history = []    # last ~10 frames for sustained decel check
         self.needs_redraw = False
@@ -1579,13 +1585,22 @@ class TrackMapApp:
             throttle = player.get('throttle', 0.0)
             brake = player.get('brake', 0.0)
 
+            # Compute real dt from session timestamps
+            session_time = data.get('sessionTime', 0)
+            if self.prev_session_time > 0 and session_time > self.prev_session_time:
+                real_dt = session_time - self.prev_session_time
+                real_dt = max(0.01, min(0.05, real_dt))  # clamp
+            else:
+                real_dt = 1.0 / 30.0
+            self.prev_session_time = session_time
+
             # Player world position for lateral offset
             player_world_pos = player.get('world_pos_m')
 
             # Compute player position FIRST (shared reference for nearby cars)
             pu, pv, player_lat, p_off = compute_track_position(
                 self.track_map, player_world_pos, lap_dist,
-                car_id='player', speed_kmh=speed)
+                car_id='player', speed_kmh=speed, dt=real_dt)
 
             # Follow player if enabled
             if self.follow_player:
@@ -1610,7 +1625,7 @@ class TrackMapApp:
                     cu, cv, car_lat, car_off = compute_track_position(
                         self.track_map, car_world_pos, car_dist,
                         car_id=f'car_{i}', speed_kmh=car_speed,
-                        player_seg_idx=player_seg)
+                        dt=real_dt, player_seg_idx=player_seg)
                     ccx, ccy = self.transform.to_canvas(cu, cv)
                     r = self.OTHER_CAR_RADIUS
                     self.canvas.coords(
