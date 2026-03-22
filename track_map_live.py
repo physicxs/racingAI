@@ -322,8 +322,19 @@ def _get_car_state(car_id):
     return _car_states[car_id]
 
 
-def _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius):
-    """Search for best segment projection within a window. Returns (seg_idx, proj_u, proj_v, dist_sq)."""
+CONTINUITY_LAMBDA = 0.5  # penalty per index difference
+
+
+def _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius,
+                       prev_idx=None):
+    """Search for best segment projection within a window.
+
+    Uses continuity-penalized scoring when prev_idx is provided:
+        score = distance + λ * |candidate - prev|
+
+    Returns (seg_idx, proj_u, proj_v, dist_sq).
+    """
+    best_score = float('inf')
     best_dist_sq = float('inf')
     best_proj_u = us[center_idx]
     best_proj_v = vs[center_idx]
@@ -352,7 +363,17 @@ def _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius):
         dv = car_v - proj_v
         dist_sq = du * du + dv * dv
 
-        if dist_sq < best_dist_sq:
+        # Continuity penalty
+        if prev_idx is not None:
+            idx_delta = abs(i - prev_idx)
+            if idx_delta > n // 2:
+                idx_delta = n - idx_delta
+            score = dist_sq + CONTINUITY_LAMBDA * idx_delta
+        else:
+            score = dist_sq
+
+        if score < best_score:
+            best_score = score
             best_dist_sq = dist_sq
             best_proj_u = proj_u
             best_proj_v = proj_v
@@ -446,7 +467,8 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
                     center_idx = player_seg_idx
 
         best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
-            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 5)
+            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 5,
+                               prev_idx=state.prev_seg_idx)
 
         if best_dist_sq < STRICT_DIST_SQ:
             # Velocity check (player 1.5x, others 2x)
@@ -476,7 +498,8 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
         center_idx = state.prev_seg_idx
 
         best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
-            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 15)
+            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 15,
+                               prev_idx=state.prev_seg_idx)
 
         if best_dist_sq < RELAXED_DIST_SQ:
             # Relaxed velocity: 3x
@@ -503,11 +526,28 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
 
     # ── Update state or hold ──
     if accepted:
+        # Index smoothing: blend with previous to reduce jitter
+        if state.prev_seg_idx is not None:
+            # Handle wrap-around
+            raw_idx = best_seg_idx
+            prev = state.prev_seg_idx
+            delta = raw_idx - prev
+            if delta > n // 2:
+                delta -= n
+            elif delta < -n // 2:
+                delta += n
+            smoothed = prev + int(round(0.3 * delta))
+            best_seg_idx = smoothed % n
+
         state.prev_seg_idx = best_seg_idx
         state.prev_world_u = car_u
         state.prev_world_v = car_v
+
+        # Re-project onto smoothed segment
+        _, best_proj_u, best_proj_v, _ = \
+            _find_best_segment(car_u, car_v, us, vs, n, best_seg_idx, 0)
     else:
-        # Hold — but do NOT update render position (freeze render, no lerp drift)
+        # Hold — freeze render, no lerp drift
         best_seg_idx = state.prev_seg_idx
         _, best_proj_u, best_proj_v, _ = \
             _find_best_segment(car_u, car_v, us, vs, n, best_seg_idx, 0)
@@ -534,12 +574,9 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     dv = car_v - best_proj_v
     lateral_offset = du * right_u + dv * right_v
 
-    # Offset stability: clamp delta to ±2m per frame
-    MAX_OFFSET_DELTA = 2.0
+    # Offset smoothing: exponential low-pass
     if state.prev_lateral != 0.0:
-        offset_delta = lateral_offset - state.prev_lateral
-        if abs(offset_delta) > MAX_OFFSET_DELTA:
-            lateral_offset = state.prev_lateral + MAX_OFFSET_DELTA * (1 if offset_delta > 0 else -1)
+        lateral_offset = 0.8 * state.prev_lateral + 0.2 * lateral_offset
 
     hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
 
@@ -547,7 +584,6 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     if abs(lateral_offset) > hw * 2:
         if state.prev_u is not None:
             return state.prev_u, state.prev_v, state.prev_lateral, state.off_track_count >= 5
-        # No previous — use projection at centerline
         return best_proj_u, best_proj_v, 0.0, False
 
     state.prev_lateral = lateral_offset
