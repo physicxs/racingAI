@@ -1657,45 +1657,51 @@ class TrackMapApp:
                 self._full_redraw()
             player_seg = _get_car_state('player').prev_seg_idx
 
-            # Update other cars (using player segment as reference)
+            # Update other cars using carIndex as stable identity
             all_cars = data.get('allCars', [])
             debug_offsets = []
-            for i in range(self.MAX_OTHER_CARS):
-                if i < len(all_cars):
-                    car = all_cars[i]
-                    car_dist = car.get('lapDistance', 0.0)
-                    car_pos = car.get('position', 0)
-                    car_world_pos = car.get('world_pos_m')
-                    car_speed = car.get('speed', 0)
-                    cu, cv, car_lat, car_off = compute_track_position(
-                        self.track_map, car_world_pos, car_dist,
-                        car_id=f'car_{i}', speed_kmh=car_speed,
-                        dt=real_dt, player_seg_idx=player_seg)
+            active_car_ids = set()
 
-                    # Store interpolation state (seg_idx, offset, time, off_track)
-                    cid = f'car_{i}'
-                    cs = _get_car_state(cid)
-                    if cid in self._interp_curr:
-                        self._interp_prev[cid] = self._interp_curr[cid]
-                    self._interp_curr[cid] = (cs.prev_seg_idx or 0, car_lat, now, car_off)
-                else:
-                    car_pos = 0
-                    car_off = False
+            for car in all_cars:
+                car_index = car.get('carIndex', -1)
+                if car_index < 0:
+                    continue
+                cid = f'ci_{car_index}'  # stable identity from carIndex
+                active_car_ids.add(cid)
+
+                car_dist = car.get('lapDistance', 0.0)
+                car_pos = car.get('position', 0)
+                car_world_pos = car.get('world_pos_m')
+                car_speed = car.get('speed', 0)
+                cu, cv, car_lat, car_off = compute_track_position(
+                    self.track_map, car_world_pos, car_dist,
+                    car_id=cid, speed_kmh=car_speed,
+                    dt=real_dt, player_seg_idx=player_seg)
+
+                # Store interpolation state (seg_idx, offset, time, off_track)
+                cs = _get_car_state(cid)
+                if cid in self._interp_curr:
+                    self._interp_prev[cid] = self._interp_curr[cid]
+                self._interp_curr[cid] = (cs.prev_seg_idx or 0, car_lat, now, car_off)
 
             # ── Interpolated rendering ──
             render_now = time.time()
 
-            # Render other cars with interpolation
-            for i in range(self.MAX_OTHER_CARS):
-                cid = f'car_{i}'
+            # Map active cars to marker slots (sorted by position for stable ordering)
+            render_cars = []
+            for car in all_cars:
+                car_index = car.get('carIndex', -1)
+                if car_index < 0:
+                    continue
+                cid = f'ci_{car_index}'
                 if cid in self._interp_curr:
+                    render_cars.append((cid, car.get('position', 0)))
+
+            for i in range(self.MAX_OTHER_CARS):
+                if i < len(render_cars):
+                    cid, car_pos = render_cars[i]
                     cu, cv = self._interp_pos(cid, render_now)
                     _, _, _, car_off = self._interp_curr[cid]
-
-                    if i < len(all_cars):
-                        car_pos = all_cars[i].get('position', 0)
-                    else:
-                        car_pos = 0
 
                     ccx, ccy = self.transform.to_canvas(cu, cv)
                     r = self.OTHER_CAR_RADIUS
@@ -1718,13 +1724,6 @@ class TrackMapApp:
                         self.canvas.itemconfig(
                             self.other_car_markers[i],
                             fill=self.OTHER_CAR_COLOR, outline='#66bbff')
-                    if self.debug and car_world_pos:
-                        debug_offsets.append(
-                            f"  Car P{car_pos}: {car_lat:+.1f}m"
-                            f"  seg={_get_car_state(f'car_{i}').prev_seg_idx}"
-                            f"  world=({car_world_pos.get('x',0):.1f},"
-                            f"{car_world_pos.get('z',0):.1f})"
-                            f"  proj=({cu:.1f},{cv:.1f})")
                 else:
                     self.canvas.coords(
                         self.other_car_markers[i], -20, -20, -20, -20
@@ -1807,10 +1806,12 @@ class TrackMapApp:
                           f" seg={ps.prev_seg_idx} lat={player_lat:+.1f}m"
                           f" hw={hw:.1f}m inv={ps.invalid_count} spd={speed}",
                           file=sys.stderr, flush=True)
-                    for ci in range(min(2, len(all_cars))):
-                        cs = _get_car_state(f'car_{ci}')
+                    for ci, car in enumerate(all_cars[:2]):
+                        car_idx = car.get('carIndex', -1)
+                        cid = f'ci_{car_idx}'
+                        cs = _get_car_state(cid)
                         d = cs.prev_seg_idx - ps.prev_seg_idx if cs.prev_seg_idx is not None and ps.prev_seg_idx is not None else '?'
-                        print(f"[DEBUG]   car_{ci} {phase_names.get(cs.phase, '?')}"
+                        print(f"[DEBUG]   ci_{car_idx} {phase_names.get(cs.phase, '?')}"
                               f" seg={cs.prev_seg_idx} delta={d} inv={cs.invalid_count}",
                               file=sys.stderr, flush=True)
                     wp = player_world_pos or {}
@@ -1877,14 +1878,13 @@ class TrackMapApp:
                     cx, cy = self.transform.to_canvas(ipu, ipv)
                     r = self.CAR_RADIUS
                     self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
-                # Interpolate other cars
-                for i in range(self.MAX_OTHER_CARS):
-                    cid = f'car_{i}'
-                    if cid in self._interp_curr:
-                        cu, cv = self._interp_pos(cid, render_now)
-                        ccx, ccy = self.transform.to_canvas(cu, cv)
-                        r = self.OTHER_CAR_RADIUS
-                        self.canvas.coords(
+                # Interpolate other cars (using stored interp keys)
+                car_cids = [k for k in self._interp_curr if k != 'player']
+                for i, cid in enumerate(car_cids[:self.MAX_OTHER_CARS]):
+                    cu, cv = self._interp_pos(cid, render_now)
+                    ccx, ccy = self.transform.to_canvas(cu, cv)
+                    r = self.OTHER_CAR_RADIUS
+                    self.canvas.coords(
                             self.other_car_markers[i],
                             ccx - r, ccy - r, ccx + r, ccy + r)
 
