@@ -382,8 +382,8 @@ def _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius,
     return best_seg_idx, best_proj_u, best_proj_v, best_dist_sq
 
 
-STRICT_DIST_SQ = 10.0 * 10.0   # 10m — strict (TRACKING)
-RELAXED_DIST_SQ = 15.0 * 15.0  # 15m — relaxed (UNSTABLE)
+STRICT_DIST_SQ = 6.0 * 6.0     # 6m — strict (TRACKING)
+RELAXED_DIST_SQ = 10.0 * 10.0  # 10m — relaxed (UNSTABLE)
 
 
 def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
@@ -547,8 +547,16 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
         _, best_proj_u, best_proj_v, _ = \
             _find_best_segment(car_u, car_v, us, vs, n, best_seg_idx, 0)
     else:
-        # Hold — freeze render, no lerp drift
-        best_seg_idx = state.prev_seg_idx
+        # Dead reckoning: predict forward motion from speed
+        if state.prev_seg_idx is not None and speed_kmh > 0:
+            estimated_delta = (speed_kmh / 3.6) * dt  # meters
+            # ~1m per index at 1m spacing
+            idx_advance = max(1, int(round(estimated_delta)))
+            best_seg_idx = (state.prev_seg_idx + idx_advance) % n
+            state.prev_seg_idx = best_seg_idx
+        else:
+            best_seg_idx = state.prev_seg_idx
+
         _, best_proj_u, best_proj_v, _ = \
             _find_best_segment(car_u, car_v, us, vs, n, best_seg_idx, 0)
 
@@ -574,8 +582,11 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     dv = car_v - best_proj_v
     lateral_offset = du * right_u + dv * right_v
 
-    # Offset smoothing: exponential low-pass
-    if state.prev_lateral != 0.0:
+    if not accepted:
+        # Dead reckoning: preserve previous lateral offset
+        lateral_offset = state.prev_lateral
+    elif state.prev_lateral != 0.0:
+        # Offset smoothing: exponential low-pass
         lateral_offset = 0.8 * state.prev_lateral + 0.2 * lateral_offset
 
     hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
@@ -602,19 +613,13 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     pos_u = best_proj_u + right_u * lateral_offset
     pos_v = best_proj_v + right_v * lateral_offset
 
-    if accepted:
-        # Render lerp only on valid frames
-        if state.prev_u is not None:
-            LERP = 0.35
-            pos_u = state.prev_u + LERP * (pos_u - state.prev_u)
-            pos_v = state.prev_v + LERP * (pos_v - state.prev_v)
-        state.prev_u = pos_u
-        state.prev_v = pos_v
-    else:
-        # Invalid frame: freeze render (no lerp drift)
-        if state.prev_u is not None:
-            pos_u = state.prev_u
-            pos_v = state.prev_v
+    # Render lerp — always update (dead reckoning keeps cars moving)
+    if state.prev_u is not None:
+        LERP = 0.35
+        pos_u = state.prev_u + LERP * (pos_u - state.prev_u)
+        pos_v = state.prev_v + LERP * (pos_v - state.prev_v)
+    state.prev_u = pos_u
+    state.prev_v = pos_v
 
     return pos_u, pos_v, lateral_offset, is_off_track
 
