@@ -846,7 +846,7 @@ class TrackMapApp:
     OTHER_CAR_RADIUS = 4
     START_COLOR = '#ffffff'
     HUD_COLOR = '#cccccc'
-    UPDATE_MS = 100  # 10 Hz
+    UPDATE_MS = 16   # ~60 Hz render rate
     MAX_OTHER_CARS = 21
     ZOOM_FACTOR = 1.2
     PROGRESS_BAR_H = 8
@@ -866,6 +866,10 @@ class TrackMapApp:
         self.prev_speed = 0
         self.prev_damage = 0      # previous total damage for change detection
         self.prev_session_time = 0 # for real dt computation
+        # Interpolation: prev/curr projected positions per car
+        self._interp_prev = {}    # car_id → (u, v, timestamp)
+        self._interp_curr = {}    # car_id → (u, v, timestamp)
+        self._last_packet_time = 0  # system time of last telemetry update
         self.collision_frames = 0  # frames remaining in collision state
         self.speed_history = []    # last ~10 frames for sustained decel check
         self.needs_redraw = False
@@ -1568,6 +1572,23 @@ class TrackMapApp:
         if isinstance(self.reader, ReplayReader):
             self.reader.set_speed(speed)
 
+    def _interp_pos(self, car_id, now):
+        """Interpolate between prev and curr projected positions."""
+        curr = self._interp_curr.get(car_id)
+        prev = self._interp_prev.get(car_id)
+        if curr is None:
+            return 0, 0
+        cu, cv, t1 = curr[0], curr[1], curr[2]
+        if prev is None:
+            return cu, cv
+        pu, pv, t0 = prev[0], prev[1], prev[2]
+        dt = t1 - t0
+        if dt <= 0:
+            return cu, cv
+        alpha = (now - t0) / dt
+        alpha = max(0.0, min(1.0, alpha))
+        return pu + alpha * (cu - pu), pv + alpha * (cv - pv)
+
     # ─── Update Loop ─────────────────────────────────────────────────────
 
     def _update(self):
@@ -1602,6 +1623,13 @@ class TrackMapApp:
                 self.track_map, player_world_pos, lap_dist,
                 car_id='player', speed_kmh=speed, dt=real_dt)
 
+            # Store interpolation state for player
+            now = time.time()
+            if 'player' in self._interp_curr:
+                self._interp_prev['player'] = self._interp_curr['player']
+            self._interp_curr['player'] = (pu, pv, now, player_lat, p_off)
+            self._last_packet_time = now
+
             # Follow player if enabled
             if self.follow_player:
                 self.transform.center_on(pu, pv)
@@ -1626,6 +1654,31 @@ class TrackMapApp:
                         self.track_map, car_world_pos, car_dist,
                         car_id=f'car_{i}', speed_kmh=car_speed,
                         dt=real_dt, player_seg_idx=player_seg)
+
+                    # Store interpolation state
+                    cid = f'car_{i}'
+                    if cid in self._interp_curr:
+                        self._interp_prev[cid] = self._interp_curr[cid]
+                    self._interp_curr[cid] = (cu, cv, now, car_lat, car_off)
+                else:
+                    car_pos = 0
+                    car_off = False
+
+            # ── Interpolated rendering ──
+            render_now = time.time()
+
+            # Render other cars with interpolation
+            for i in range(self.MAX_OTHER_CARS):
+                cid = f'car_{i}'
+                if cid in self._interp_curr:
+                    cu, cv = self._interp_pos(cid, render_now)
+                    _, _, _, car_lat, car_off = self._interp_curr[cid]
+
+                    if i < len(all_cars):
+                        car_pos = all_cars[i].get('position', 0)
+                    else:
+                        car_pos = 0
+
                     ccx, ccy = self.transform.to_canvas(cu, cv)
                     r = self.OTHER_CAR_RADIUS
                     self.canvas.coords(
@@ -1637,7 +1690,7 @@ class TrackMapApp:
                         ccx, ccy - r - 2
                     )
                     self.canvas.itemconfig(
-                        self.other_car_labels[i], text=f'P{car_pos}'
+                        self.other_car_labels[i], text=f'P{car_pos}' if car_pos else ''
                     )
                     if car_off:
                         self.canvas.itemconfig(
@@ -1660,7 +1713,9 @@ class TrackMapApp:
                     )
                     self.canvas.coords(self.other_car_labels[i], -20, -20)
                     self.canvas.itemconfig(self.other_car_labels[i], text='')
-            cx, cy = self.transform.to_canvas(pu, pv)
+            # Interpolated player render position
+            ipu, ipv = self._interp_pos('player', render_now)
+            cx, cy = self.transform.to_canvas(ipu, ipv)
             r = self.CAR_RADIUS
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
 
@@ -1795,7 +1850,26 @@ class TrackMapApp:
             # Update stats panel
             self._draw_stats(data)
         else:
-            # Still handle redraw even without new data (e.g. user zoomed)
+            # No new telemetry — still render interpolated positions
+            if self._interp_curr and self.last_data:
+                render_now = time.time()
+                # Interpolate player
+                if 'player' in self._interp_curr:
+                    ipu, ipv = self._interp_pos('player', render_now)
+                    cx, cy = self.transform.to_canvas(ipu, ipv)
+                    r = self.CAR_RADIUS
+                    self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
+                # Interpolate other cars
+                for i in range(self.MAX_OTHER_CARS):
+                    cid = f'car_{i}'
+                    if cid in self._interp_curr:
+                        cu, cv = self._interp_pos(cid, render_now)
+                        ccx, ccy = self.transform.to_canvas(cu, cv)
+                        r = self.OTHER_CAR_RADIUS
+                        self.canvas.coords(
+                            self.other_car_markers[i],
+                            ccx - r, ccy - r, ccx + r, ccy + r)
+
             if self.needs_redraw:
                 self._full_redraw()
 
