@@ -284,7 +284,7 @@ def project_world_to_2d(track_map, world_pos):
 class CarProjectionState:
     """Per-car projection tracking for temporal continuity."""
     __slots__ = ('is_initialized', 'prev_seg_idx', 'prev_u', 'prev_v',
-                 'prev_world_u', 'prev_world_v')
+                 'prev_world_u', 'prev_world_v', 'stale_frames')
 
     def __init__(self):
         self.is_initialized = False
@@ -293,11 +293,13 @@ class CarProjectionState:
         self.prev_v = None
         self.prev_world_u = None  # previous world 2D position
         self.prev_world_v = None
+        self.stale_frames = 0    # frames since last valid update
 
     def invalidate(self):
         """Mark state as needing reinitialization."""
         self.is_initialized = False
         self.prev_seg_idx = None
+        self.stale_frames = 0
 
 
 # Per-car state: keyed by car identifier ('player' or car index)
@@ -349,16 +351,15 @@ def _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius):
     return best_seg_idx, best_proj_u, best_proj_v, best_dist_sq
 
 
-REINIT_DISTANCE_SQ = 20.0 * 20.0  # 20m — trigger reinitialization
+VALID_DIST_SQ = 10.0 * 10.0  # 10m — valid projection threshold
 
 
 def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
                            speed_kmh=0, dt=1/30, player_seg_idx=None):
     """Compute car's 2D position using segment-based projection.
 
-    Initialization: global search on first frame, then local ±5.
-    Reinitialization: if projection distance > 20m.
-    Per-car state. Nearby cars use player_seg_idx as shared reference.
+    Multi-stage recovery: ±5 → ±15 → global.
+    Per-car stuck detection with automatic recovery.
 
     Returns (u, v, lateral_offset, is_off_track).
     """
@@ -367,6 +368,7 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     # Fallback: if world→2D fails, return previous valid position
     projected = project_world_to_2d(track_map, world_pos)
     if projected is None:
+        state.stale_frames += 1
         if state.prev_u is not None:
             return state.prev_u, state.prev_v, 0.0, False
         cu, cv = lookup_position(track_map, lap_distance)
@@ -384,18 +386,15 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
         cu, cv = lookup_position(track_map, lap_distance)
         return cu, cv, 0.0, False
 
-    # ── Phase 1: Initialization (global search) ──
+    # ── Initialization (global search on first frame) ──
     if not state.is_initialized:
         if car_id == 'player':
-            # Full track search for player
             best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
                 _find_best_segment(car_u, car_v, us, vs, n, 0, n - 1)
         elif player_seg_idx is not None:
-            # Nearby car: search within player ±20
             best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
                 _find_best_segment(car_u, car_v, us, vs, n, player_seg_idx, 20)
         else:
-            # No player reference: use lapDistance estimate, wider search
             center = int(lap_distance % track_len) % n
             best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
                 _find_best_segment(car_u, car_v, us, vs, n, center, 50)
@@ -404,50 +403,72 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
         state.prev_world_u = car_u
         state.prev_world_v = car_v
         state.is_initialized = True
+        state.stale_frames = 0
 
-    # ── Phase 2: Local search (±5 from previous) ──
+    # ── Multi-stage recovery for initialized cars ──
     else:
         center_idx = state.prev_seg_idx
-        search_radius = 5
+        accepted = False
 
-        # Nearby cars close to player: use player segment, wider search
+        # For nearby cars close to player, prefer player segment
+        use_player_ref = False
         if player_seg_idx is not None and car_id != 'player':
-            player_state = _get_car_state('player')
-            if player_state.prev_world_u is not None:
-                dx = car_u - player_state.prev_world_u
-                dy = car_v - player_state.prev_world_v
-                if dx * dx + dy * dy < 400:  # within 20m
-                    center_idx = player_seg_idx
-                    search_radius = 10
+            ps = _get_car_state('player')
+            if ps.prev_world_u is not None:
+                dx = car_u - ps.prev_world_u
+                dy = car_v - ps.prev_world_v
+                if dx * dx + dy * dy < 400:
+                    use_player_ref = True
 
+        # Stage 1: ±5 from previous (or player ref)
+        s1_center = player_seg_idx if use_player_ref else center_idx
         best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
-            _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius)
+            _find_best_segment(car_u, car_v, us, vs, n, s1_center, 5)
 
-        # Hard reject jumps > 5 from previous
         delta = best_seg_idx - state.prev_seg_idx
         if delta < -n // 2:
             delta += n
         elif delta > n // 2:
             delta -= n
-        if abs(delta) > 5:
+
+        if abs(delta) <= 5 and best_dist_sq < VALID_DIST_SQ:
+            accepted = True
+
+        # Stage 2: ±15 expanded search
+        if not accepted:
+            best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
+                _find_best_segment(car_u, car_v, us, vs, n, center_idx, 15)
+            delta = best_seg_idx - state.prev_seg_idx
+            if delta < -n // 2:
+                delta += n
+            elif delta > n // 2:
+                delta -= n
+            if abs(delta) <= 15 and best_dist_sq < VALID_DIST_SQ:
+                accepted = True
+
+        # Stage 3: Global recovery (if stuck > 10 frames or forced at 30)
+        if not accepted and state.stale_frames >= 10:
+            best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
+                _find_best_segment(car_u, car_v, us, vs, n, 0, n - 1)
+            accepted = True  # always accept global
+
+        # Force global reinitialization at 30 stale frames
+        if not accepted and state.stale_frames >= 30:
+            best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
+                _find_best_segment(car_u, car_v, us, vs, n, 0, n - 1)
+            accepted = True
+
+        if accepted:
+            state.prev_seg_idx = best_seg_idx
+            state.prev_world_u = car_u
+            state.prev_world_v = car_v
+            state.stale_frames = 0
+        else:
+            # Hold previous position, increment stale counter
+            state.stale_frames += 1
             best_seg_idx = state.prev_seg_idx
             _, best_proj_u, best_proj_v, best_dist_sq = \
                 _find_best_segment(car_u, car_v, us, vs, n, best_seg_idx, 0)
-
-    # ── Phase 3: Reinitialization check ──
-    if best_dist_sq > REINIT_DISTANCE_SQ:
-        # Projection is far from track — don't update state, use previous
-        if state.prev_u is not None:
-            return state.prev_u, state.prev_v, 0.0, False
-        # No previous — force reinit next frame
-        state.invalidate()
-        cu, cv = lookup_position(track_map, lap_distance)
-        return cu, cv, 0.0, False
-
-    # Update state (only on valid projection)
-    state.prev_seg_idx = best_seg_idx
-    state.prev_world_u = car_u
-    state.prev_world_v = car_v
 
     # ── Compute lateral offset ──
     i = best_seg_idx
@@ -1275,35 +1296,45 @@ class TrackMapApp:
         y += 18
 
         # ── Mini Leaderboard ──
-        nearby = data.get('nearbyCars', [])
+        all_cars_lb = data.get('allCars', [])
+        nearby_gaps = {c.get('carIndex'): c.get('gap', 0) for c in data.get('nearbyCars', [])}
         player_pos = player.get('position', 0)
+        player_lap = player.get('lapNumber', 0)
         player_lap_dist = player.get('lapDistance', 0)
+        track_length = meta.get('track_length', 5000)
+        player_progress = player_lap * track_length + player_lap_dist
 
-        if nearby and player_pos > 0:
+        if all_cars_lb and player_pos > 0:
             c.create_text(w // 2, y, anchor='n', fill='#8888aa',
                           font=('Courier', 9, 'bold'), text='LEADERBOARD')
             y += 16
 
-            # Use position to determine ahead/behind (lower position = ahead)
-            # Use gap for display
+            # Compute progress for each car, determine ahead/behind
             ahead = []
             behind = []
-            for car in nearby:
+            for car in all_cars_lb:
                 car_pos = car.get('position', 0)
-                gap = abs(car.get('gap', 0))
-                if car_pos < player_pos:
+                if car_pos == player_pos or car_pos == 0:
+                    continue
+                car_lap = car.get('lapNumber', 0)
+                car_dist = car.get('lapDistance', 0)
+                car_progress = car_lap * track_length + car_dist
+                car_idx = car.get('carIndex', -1)
+                gap = abs(nearby_gaps.get(car_idx, 0))
+
+                if car_progress > player_progress:
                     ahead.append({'position': car_pos, 'gap': gap})
-                elif car_pos > player_pos:
+                else:
                     behind.append({'position': car_pos, 'gap': gap})
 
-            # Ahead: sorted by position descending (P3, P2, P1 style — closest first at bottom)
-            ahead.sort(key=lambda c: c['position'])
-            # Behind: sorted by position ascending (closest first)
-            behind.sort(key=lambda c: c['position'])
+            # Sort by gap (smallest first = closest)
+            ahead.sort(key=lambda c: c['gap'])
+            behind.sort(key=lambda c: c['gap'])
 
-            # Take up to 3 each
             ahead = ahead[:3]
             behind = behind[:3]
+            # Display ahead from furthest to closest (top to bottom)
+            ahead.reverse()
 
             row_h = 16
             font_lb = ('Courier', 8)
@@ -1311,10 +1342,11 @@ class TrackMapApp:
             for car in ahead:
                 pos = car['position']
                 gap = car['gap']
+                gap_str = f'+{gap:.2f}' if gap > 0 else ''
                 c.create_text(mx, y, anchor='w', fill='#888899',
                               font=font_lb, text=f'P{pos}')
                 c.create_text(w - mx, y, anchor='e', fill='#aaaacc',
-                              font=font_lb, text=f'+{gap:.2f}')
+                              font=font_lb, text=gap_str)
                 y += row_h
 
             # Player row
@@ -1329,10 +1361,11 @@ class TrackMapApp:
             for car in behind:
                 pos = car['position']
                 gap = car['gap']
+                gap_str = f'-{gap:.2f}' if gap > 0 else ''
                 c.create_text(mx, y, anchor='w', fill='#888899',
                               font=font_lb, text=f'P{pos}')
                 c.create_text(w - mx, y, anchor='e', fill='#aaaacc',
-                              font=font_lb, text=f'-{gap:.2f}')
+                              font=font_lb, text=gap_str)
                 y += row_h
 
     # ─── Event Handlers ───────────────────────────────────────────────────
@@ -1564,13 +1597,14 @@ class TrackMapApp:
                     ps = _get_car_state('player')
                     hw = self.track_map['half_widths'][ps.prev_seg_idx] if ps.prev_seg_idx else 0
                     print(f"[DEBUG] player seg={ps.prev_seg_idx} lat={player_lat:+.1f}m"
-                          f" hw={hw:.1f}m off={p_off} spd={speed}",
+                          f" hw={hw:.1f}m off={p_off} spd={speed}"
+                          f" stale={ps.stale_frames}",
                           file=sys.stderr, flush=True)
-                    # Log first 2 nearby cars
                     for ci in range(min(2, len(all_cars))):
                         cs = _get_car_state(f'car_{ci}')
+                        d = cs.prev_seg_idx - ps.prev_seg_idx if cs.prev_seg_idx is not None and ps.prev_seg_idx is not None else '?'
                         print(f"[DEBUG]   car_{ci} seg={cs.prev_seg_idx}"
-                              f" delta={cs.prev_seg_idx - ps.prev_seg_idx if cs.prev_seg_idx and ps.prev_seg_idx else '?'}",
+                              f" delta={d} stale={cs.stale_frames}",
                               file=sys.stderr, flush=True)
                     wp = player_world_pos or {}
                     print(f"[DEBUG] Player P{position}: {player_lat:+.1f}m"
