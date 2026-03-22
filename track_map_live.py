@@ -449,20 +449,44 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
             if abs(delta) <= 15 and best_dist_sq < VALID_DIST_SQ:
                 accepted = True
 
-        # Stage 3: Global recovery ONLY if stuck > 15 frames
-        if not accepted and state.stale_frames >= 15:
+        # Stage 3: Global recovery ONLY if stuck > 20 frames
+        if not accepted and state.stale_frames >= 20:
             best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
                 _find_best_segment(car_u, car_v, us, vs, n, 0, n - 1)
-            accepted = True
+            if best_dist_sq < VALID_DIST_SQ:
+                accepted = True
 
-        # Velocity consistency filter: reject if movement > 2x expected
-        if accepted and state.prev_world_u is not None and speed_kmh > 0:
-            move_du = car_u - state.prev_world_u
-            move_dv = car_v - state.prev_world_v
-            actual_move = math.sqrt(move_du * move_du + move_dv * move_dv)
-            expected_move = (speed_kmh / 3.6) * dt * 2.0
-            if actual_move > max(expected_move, 5):
+        # ── Post-acceptance validation ──
+        if accepted:
+            # World distance validation: reject if >10m from car
+            if best_dist_sq > VALID_DIST_SQ:
                 accepted = False
+
+            # Segment direction validation: reject if movement >90° from segment
+            if accepted and state.prev_world_u is not None:
+                move_du = car_u - state.prev_world_u
+                move_dv = car_v - state.prev_world_v
+                move_len = math.sqrt(move_du * move_du + move_dv * move_dv)
+                if move_len > 0.5:  # only check when actually moving
+                    si = best_seg_idx
+                    si_next = (si + 1) % n
+                    seg_du = us[si_next] - us[si]
+                    seg_dv = vs[si_next] - vs[si]
+                    seg_len = math.sqrt(seg_du * seg_du + seg_dv * seg_dv)
+                    if seg_len > 0.01:
+                        dot = (move_du * seg_du + move_dv * seg_dv) / (move_len * seg_len)
+                        if dot < 0:  # >90° — wrong direction
+                            accepted = False
+
+            # Velocity filter: player 1.5x, others 2x
+            if accepted and state.prev_world_u is not None and speed_kmh > 0:
+                move_du = car_u - state.prev_world_u
+                move_dv = car_v - state.prev_world_v
+                actual_move = math.sqrt(move_du * move_du + move_dv * move_dv)
+                vel_factor = 1.5 if car_id == 'player' else 2.0
+                expected_move = (speed_kmh / 3.6) * dt * vel_factor
+                if actual_move > max(expected_move, 5):
+                    accepted = False
 
         if accepted:
             state.prev_seg_idx = best_seg_idx
@@ -505,9 +529,17 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
         if abs(offset_delta) > MAX_OFFSET_DELTA:
             lateral_offset = state.prev_lateral + MAX_OFFSET_DELTA * (1 if offset_delta > 0 else -1)
 
+    hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
+
+    # Hard offset clamp: reject extreme outliers
+    if abs(lateral_offset) > hw * 2:
+        if state.prev_u is not None:
+            return state.prev_u, state.prev_v, state.prev_lateral, state.off_track_count >= 5
+        # No previous — use projection at centerline
+        return best_proj_u, best_proj_v, 0.0, False
+
     state.prev_lateral = lateral_offset
 
-    hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
     TRACK_MARGIN = 1.5
 
     # Off-track: temporal filter — must persist for 5 frames
