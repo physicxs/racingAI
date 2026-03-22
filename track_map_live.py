@@ -283,14 +283,21 @@ def project_world_to_2d(track_map, world_pos):
 
 class CarProjectionState:
     """Per-car projection tracking for temporal continuity."""
-    __slots__ = ('prev_seg_idx', 'prev_u', 'prev_v', 'prev_world_u', 'prev_world_v')
+    __slots__ = ('is_initialized', 'prev_seg_idx', 'prev_u', 'prev_v',
+                 'prev_world_u', 'prev_world_v')
 
     def __init__(self):
+        self.is_initialized = False
         self.prev_seg_idx = None
         self.prev_u = None       # previous render position
         self.prev_v = None
         self.prev_world_u = None  # previous world 2D position
         self.prev_world_v = None
+
+    def invalidate(self):
+        """Mark state as needing reinitialization."""
+        self.is_initialized = False
+        self.prev_seg_idx = None
 
 
 # Per-car state: keyed by car identifier ('player' or car index)
@@ -342,18 +349,22 @@ def _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius):
     return best_seg_idx, best_proj_u, best_proj_v, best_dist_sq
 
 
+REINIT_DISTANCE_SQ = 20.0 * 20.0  # 20m — trigger reinitialization
+
+
 def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
                            speed_kmh=0, dt=1/30, player_seg_idx=None):
     """Compute car's 2D position using segment-based projection.
 
-    Per-car state tracking. Nearby cars use player_seg_idx as shared reference
-    for consistent side-by-side positioning.
+    Initialization: global search on first frame, then local ±5.
+    Reinitialization: if projection distance > 20m.
+    Per-car state. Nearby cars use player_seg_idx as shared reference.
 
     Returns (u, v, lateral_offset, is_off_track).
     """
     state = _get_car_state(car_id)
 
-    # Fallback: if projection fails, return previous valid position
+    # Fallback: if world→2D fails, return previous valid position
     projected = project_world_to_2d(track_map, world_pos)
     if projected is None:
         if state.prev_u is not None:
@@ -373,39 +384,46 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
         cu, cv = lookup_position(track_map, lap_distance)
         return cu, cv, 0.0, False
 
-    # Determine search center
-    # Priority: previous segment > player reference > lapDistance estimate
-    center_idx = int(lap_distance % track_len)
-    if center_idx >= n:
-        center_idx = n - 1
+    # ── Phase 1: Initialization (global search) ──
+    if not state.is_initialized:
+        if car_id == 'player':
+            # Full track search for player
+            best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
+                _find_best_segment(car_u, car_v, us, vs, n, 0, n - 1)
+        elif player_seg_idx is not None:
+            # Nearby car: search within player ±20
+            best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
+                _find_best_segment(car_u, car_v, us, vs, n, player_seg_idx, 20)
+        else:
+            # No player reference: use lapDistance estimate, wider search
+            center = int(lap_distance % track_len) % n
+            best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
+                _find_best_segment(car_u, car_v, us, vs, n, center, 50)
 
-    if state.prev_seg_idx is not None:
+        state.prev_seg_idx = best_seg_idx
+        state.prev_world_u = car_u
+        state.prev_world_v = car_v
+        state.is_initialized = True
+
+    # ── Phase 2: Local search (±5 from previous) ──
+    else:
         center_idx = state.prev_seg_idx
-    elif player_seg_idx is not None:
-        # Nearby car with no history: anchor to player segment
-        center_idx = player_seg_idx
+        search_radius = 5
 
-    # Tight search: ±5 segments from center
-    search_radius = 5
+        # Nearby cars close to player: use player segment, wider search
+        if player_seg_idx is not None and car_id != 'player':
+            player_state = _get_car_state('player')
+            if player_state.prev_world_u is not None:
+                dx = car_u - player_state.prev_world_u
+                dy = car_v - player_state.prev_world_v
+                if dx * dx + dy * dy < 400:  # within 20m
+                    center_idx = player_seg_idx
+                    search_radius = 10
 
-    # For nearby cars, also search around player segment for consistency
-    if player_seg_idx is not None and car_id != 'player':
-        # Check distance to player in world space
-        player_state = _get_car_state('player')
-        if player_state.prev_world_u is not None:
-            dx = car_u - player_state.prev_world_u
-            dy = car_v - player_state.prev_world_v
-            world_dist = math.sqrt(dx * dx + dy * dy)
-            if world_dist < 20:
-                # Close to player: use player segment as reference, wider search
-                center_idx = player_seg_idx
-                search_radius = 10
+        best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
+            _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius)
 
-    best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
-        _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius)
-
-    # Hard reject: if jump > 5 from previous, use previous
-    if state.prev_seg_idx is not None:
+        # Hard reject jumps > 5 from previous
         delta = best_seg_idx - state.prev_seg_idx
         if delta < -n // 2:
             delta += n
@@ -413,15 +431,25 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
             delta -= n
         if abs(delta) > 5:
             best_seg_idx = state.prev_seg_idx
-            # Re-project onto the kept segment
-            _, best_proj_u, best_proj_v, _ = \
+            _, best_proj_u, best_proj_v, best_dist_sq = \
                 _find_best_segment(car_u, car_v, us, vs, n, best_seg_idx, 0)
 
+    # ── Phase 3: Reinitialization check ──
+    if best_dist_sq > REINIT_DISTANCE_SQ:
+        # Projection is far from track — don't update state, use previous
+        if state.prev_u is not None:
+            return state.prev_u, state.prev_v, 0.0, False
+        # No previous — force reinit next frame
+        state.invalidate()
+        cu, cv = lookup_position(track_map, lap_distance)
+        return cu, cv, 0.0, False
+
+    # Update state (only on valid projection)
     state.prev_seg_idx = best_seg_idx
     state.prev_world_u = car_u
     state.prev_world_v = car_v
 
-    # Compute local track basis from best segment
+    # ── Compute lateral offset ──
     i = best_seg_idx
     i_next = (i + 1) % n
     fwd_u = us[i_next] - us[i]
@@ -436,29 +464,22 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
 
     fwd_u /= fwd_len
     fwd_v /= fwd_len
-
     right_u = -fwd_v
     right_v = fwd_u
 
-    # Raw lateral offset — no scaling, no compression
     du = car_u - best_proj_u
     dv = car_v - best_proj_v
     lateral_offset = du * right_u + dv * right_v
 
-    # Per-point half_width
     hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
-
-    # Off-track detection with curb margin
     TRACK_MARGIN = 2.0
-    effective_hw = hw + TRACK_MARGIN
-    is_off_track = abs(lateral_offset) > effective_hw
+    is_off_track = abs(lateral_offset) > (hw + TRACK_MARGIN)
 
-    # Final position: centerline projection + normal * raw offset
-    # No offset clamping — use true offset for accurate positioning
+    # Final position: projection + normal * raw offset (no clamping)
     pos_u = best_proj_u + right_u * lateral_offset
     pos_v = best_proj_v + right_v * lateral_offset
 
-    # Render smoothing only (not on offset) — lerp on final position
+    # Render-only lerp for smooth display
     if state.prev_u is not None:
         LERP = 0.35
         pos_u = state.prev_u + LERP * (pos_u - state.prev_u)
