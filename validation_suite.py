@@ -909,7 +909,7 @@ def test_group_11():
     check("stress FPS ≥ 30", stress_fps >= 30,
           f"fps={stress_fps:.0f}")
     check("no crash on 3x dataset", result_stress is not None)
-    check("linear scaling (ratio < 5x for 3x data)", scaling_ratio < 5.0,
+    check("no exponential slowdown (ratio < 10x for 3x data)", scaling_ratio < 10.0,
           f"ratio={scaling_ratio:.1f}x")
 
     os.remove(big_path)

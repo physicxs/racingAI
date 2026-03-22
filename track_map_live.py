@@ -284,7 +284,8 @@ def project_world_to_2d(track_map, world_pos):
 class CarProjectionState:
     """Per-car projection tracking for temporal continuity."""
     __slots__ = ('is_initialized', 'prev_seg_idx', 'prev_u', 'prev_v',
-                 'prev_world_u', 'prev_world_v', 'stale_frames')
+                 'prev_world_u', 'prev_world_v', 'stale_frames',
+                 'prev_lateral', 'off_track_count')
 
     def __init__(self):
         self.is_initialized = False
@@ -294,6 +295,8 @@ class CarProjectionState:
         self.prev_world_u = None  # previous world 2D position
         self.prev_world_v = None
         self.stale_frames = 0    # frames since last valid update
+        self.prev_lateral = 0.0  # previous lateral offset
+        self.off_track_count = 0 # consecutive off-track frames (for temporal filter)
 
     def invalidate(self):
         """Mark state as needing reinitialization."""
@@ -434,7 +437,7 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
         if abs(delta) <= 5 and best_dist_sq < VALID_DIST_SQ:
             accepted = True
 
-        # Stage 2: ±15 expanded search
+        # Stage 2: ±15 expanded search (if Stage 1 fails)
         if not accepted:
             best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
                 _find_best_segment(car_u, car_v, us, vs, n, center_idx, 15)
@@ -446,17 +449,20 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
             if abs(delta) <= 15 and best_dist_sq < VALID_DIST_SQ:
                 accepted = True
 
-        # Stage 3: Global recovery (if stuck > 10 frames or forced at 30)
-        if not accepted and state.stale_frames >= 10:
-            best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
-                _find_best_segment(car_u, car_v, us, vs, n, 0, n - 1)
-            accepted = True  # always accept global
-
-        # Force global reinitialization at 30 stale frames
-        if not accepted and state.stale_frames >= 30:
+        # Stage 3: Global recovery ONLY if stuck > 15 frames
+        if not accepted and state.stale_frames >= 15:
             best_seg_idx, best_proj_u, best_proj_v, best_dist_sq = \
                 _find_best_segment(car_u, car_v, us, vs, n, 0, n - 1)
             accepted = True
+
+        # Velocity consistency filter: reject if movement > 2x expected
+        if accepted and state.prev_world_u is not None and speed_kmh > 0:
+            move_du = car_u - state.prev_world_u
+            move_dv = car_v - state.prev_world_v
+            actual_move = math.sqrt(move_du * move_du + move_dv * move_dv)
+            expected_move = (speed_kmh / 3.6) * dt * 2.0
+            if actual_move > max(expected_move, 5):
+                accepted = False
 
         if accepted:
             state.prev_seg_idx = best_seg_idx
@@ -492,9 +498,25 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     dv = car_v - best_proj_v
     lateral_offset = du * right_u + dv * right_v
 
+    # Offset stability: clamp delta to ±2m per frame
+    MAX_OFFSET_DELTA = 2.0
+    if state.prev_lateral != 0.0:
+        offset_delta = lateral_offset - state.prev_lateral
+        if abs(offset_delta) > MAX_OFFSET_DELTA:
+            lateral_offset = state.prev_lateral + MAX_OFFSET_DELTA * (1 if offset_delta > 0 else -1)
+
+    state.prev_lateral = lateral_offset
+
     hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
-    TRACK_MARGIN = 2.0
-    is_off_track = abs(lateral_offset) > (hw + TRACK_MARGIN)
+    TRACK_MARGIN = 1.5
+
+    # Off-track: temporal filter — must persist for 5 frames
+    candidate_off = abs(lateral_offset) > (hw + TRACK_MARGIN)
+    if candidate_off:
+        state.off_track_count += 1
+    else:
+        state.off_track_count = 0
+    is_off_track = state.off_track_count >= 5
 
     # Final position: projection + normal * raw offset (no clamping)
     pos_u = best_proj_u + right_u * lateral_offset
@@ -747,8 +769,9 @@ class TrackMapApp:
         self.follow_player = False
         # Collision/state tracking for Feature 2
         self.prev_speed = 0
-        self.prev_g_lat = 0
+        self.prev_damage = 0      # previous total damage for change detection
         self.collision_frames = 0  # frames remaining in collision state
+        self.speed_history = []    # last ~10 frames for sustained decel check
         self.needs_redraw = False
         self.drag_start = None
         self.last_data = None
@@ -1299,42 +1322,35 @@ class TrackMapApp:
         all_cars_lb = data.get('allCars', [])
         nearby_gaps = {c.get('carIndex'): c.get('gap', 0) for c in data.get('nearbyCars', [])}
         player_pos = player.get('position', 0)
-        player_lap = player.get('lapNumber', 0)
-        player_lap_dist = player.get('lapDistance', 0)
-        track_length = meta.get('track_length', 5000)
-        player_progress = player_lap * track_length + player_lap_dist
 
         if all_cars_lb and player_pos > 0:
             c.create_text(w // 2, y, anchor='n', fill='#8888aa',
                           font=('Courier', 9, 'bold'), text='LEADERBOARD')
             y += 16
 
-            # Compute progress for each car, determine ahead/behind
+            # Sort all cars by position ascending (P1, P2, P3...)
+            sorted_cars = sorted(
+                [c for c in all_cars_lb if c.get('position', 0) > 0],
+                key=lambda c: c['position']
+            )
+
+            # Split into ahead (lower position) and behind (higher position)
             ahead = []
             behind = []
-            for car in all_cars_lb:
+            for car in sorted_cars:
                 car_pos = car.get('position', 0)
-                if car_pos == player_pos or car_pos == 0:
+                if car_pos == player_pos:
                     continue
-                car_lap = car.get('lapNumber', 0)
-                car_dist = car.get('lapDistance', 0)
-                car_progress = car_lap * track_length + car_dist
                 car_idx = car.get('carIndex', -1)
                 gap = abs(nearby_gaps.get(car_idx, 0))
-
-                if car_progress > player_progress:
+                if car_pos < player_pos:
                     ahead.append({'position': car_pos, 'gap': gap})
                 else:
                     behind.append({'position': car_pos, 'gap': gap})
 
-            # Sort by gap (smallest first = closest)
-            ahead.sort(key=lambda c: c['gap'])
-            behind.sort(key=lambda c: c['gap'])
-
-            ahead = ahead[:3]
-            behind = behind[:3]
-            # Display ahead from furthest to closest (top to bottom)
-            ahead.reverse()
+            # Take closest 3 ahead (highest positions = closest to player) and 3 behind
+            ahead = ahead[-3:]  # last 3 = closest positions to player
+            behind = behind[:3] # first 3 = closest positions to player
 
             row_h = 16
             font_lb = ('Courier', 8)
@@ -1543,20 +1559,31 @@ class TrackMapApp:
             r = self.CAR_RADIUS
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
 
-            # Collision/state detection (Feature 2)
-            # RED: collision/spin — sudden decel or high lateral G
-            g_lat = player.get('gForceLateral', 0)
-            decel = self.prev_speed - speed  # km/h drop per frame
-            g_lat_spike = abs(g_lat) > 4.0
-            decel_spike = decel > 30  # >30 km/h in one frame
-            yaw_rate = player.get('yaw', 0)
-            spin = abs(yaw_rate) > 1.5 and speed < 50
+            # Collision/state detection
+            # Only trigger on: damage increase OR speed drop >40 km/h in 0.3s (~9 frames)
+            fl_wing = player.get('frontLeftWingDamage', 0)
+            fr_wing = player.get('frontRightWingDamage', 0)
+            rear_wing = player.get('rearWingDamage', 0)
+            floor_dmg = player.get('floorDamage', 0)
+            total_damage = fl_wing + fr_wing + rear_wing + floor_dmg
 
-            if decel_spike or g_lat_spike or spin:
-                self.collision_frames = 30  # hold red for ~1 second
+            damage_increased = total_damage > self.prev_damage + 1
+            self.prev_damage = total_damage
+
+            # Speed drop: check if speed dropped >40 km/h over last ~9 frames (0.3s)
+            self.speed_history.append(speed)
+            if len(self.speed_history) > 9:
+                self.speed_history.pop(0)
+            speed_drop = False
+            if len(self.speed_history) >= 9:
+                max_recent = max(self.speed_history)
+                if max_recent - speed > 40:
+                    speed_drop = True
+
+            if damage_increased or speed_drop:
+                self.collision_frames = 30
 
             self.prev_speed = speed
-            self.prev_g_lat = g_lat
 
             if self.collision_frames > 0:
                 self.collision_frames -= 1
