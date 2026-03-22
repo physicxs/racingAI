@@ -590,9 +590,6 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     if not accepted:
         # Dead reckoning: preserve previous lateral offset
         lateral_offset = state.prev_lateral
-    elif state.prev_lateral != 0.0:
-        # Offset smoothing: exponential low-pass
-        lateral_offset = 0.8 * state.prev_lateral + 0.2 * lateral_offset
 
     hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
 
@@ -618,11 +615,6 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     pos_u = best_proj_u + right_u * lateral_offset
     pos_v = best_proj_v + right_v * lateral_offset
 
-    # Render lerp — always update (dead reckoning keeps cars moving)
-    if state.prev_u is not None:
-        LERP = 0.35
-        pos_u = state.prev_u + LERP * (pos_u - state.prev_u)
-        pos_v = state.prev_v + LERP * (pos_v - state.prev_v)
     state.prev_u = pos_u
     state.prev_v = pos_v
 
@@ -866,10 +858,10 @@ class TrackMapApp:
         self.prev_speed = 0
         self.prev_damage = 0      # previous total damage for change detection
         self.prev_session_time = 0 # for real dt computation
-        # Interpolation: prev/curr projected positions per car
-        self._interp_prev = {}    # car_id → (u, v, timestamp)
-        self._interp_curr = {}    # car_id → (u, v, timestamp)
-        self._last_packet_time = 0  # system time of last telemetry update
+        # Interpolation: prev/curr per car — (seg_idx, offset, timestamp, off_track)
+        self._interp_prev = {}
+        self._interp_curr = {}
+        self._last_packet_time = 0
         self.collision_frames = 0  # frames remaining in collision state
         self.speed_history = []    # last ~10 frames for sustained decel check
         self.needs_redraw = False
@@ -1573,21 +1565,45 @@ class TrackMapApp:
             self.reader.set_speed(speed)
 
     def _interp_pos(self, car_id, now):
-        """Interpolate between prev and curr projected positions."""
+        """Interpolate seg_idx and offset, reconstruct from track normals."""
         curr = self._interp_curr.get(car_id)
         prev = self._interp_prev.get(car_id)
         if curr is None:
             return 0, 0
-        cu, cv, t1 = curr[0], curr[1], curr[2]
+
+        c_idx, c_off, t1, _ = curr
         if prev is None:
-            return cu, cv
-        pu, pv, t0 = prev[0], prev[1], prev[2]
-        dt = t1 - t0
-        if dt <= 0:
-            return cu, cv
-        alpha = (now - t0) / dt
-        alpha = max(0.0, min(1.0, alpha))
-        return pu + alpha * (cu - pu), pv + alpha * (cv - pv)
+            alpha = 1.0
+            p_idx, p_off, t0 = c_idx, c_off, t1
+        else:
+            p_idx, p_off, t0, _ = prev
+            dt = t1 - t0
+            if dt > 0:
+                alpha = max(0.0, min(1.0, (now - t0) / dt))
+            else:
+                alpha = 1.0
+
+        # Interpolate index (handle wrap-around)
+        n = self.track_map['num_points']
+        delta = c_idx - p_idx
+        if delta > n // 2:
+            delta -= n
+        elif delta < -n // 2:
+            delta += n
+        idx = int(round(p_idx + alpha * delta)) % n
+
+        # Interpolate offset
+        offset = p_off + alpha * (c_off - p_off)
+
+        # Reconstruct from track centerline + stored normals
+        us = self.track_map['us']
+        vs = self.track_map['vs']
+        nus = self.track_map['normals_u']
+        nvs = self.track_map['normals_v']
+
+        pos_u = us[idx] + nus[idx] * offset
+        pos_v = vs[idx] + nvs[idx] * offset
+        return pos_u, pos_v
 
     # ─── Update Loop ─────────────────────────────────────────────────────
 
@@ -1623,11 +1639,12 @@ class TrackMapApp:
                 self.track_map, player_world_pos, lap_dist,
                 car_id='player', speed_kmh=speed, dt=real_dt)
 
-            # Store interpolation state for player
+            # Store interpolation state for player (seg_idx, offset, time, off_track)
             now = time.time()
+            ps = _get_car_state('player')
             if 'player' in self._interp_curr:
                 self._interp_prev['player'] = self._interp_curr['player']
-            self._interp_curr['player'] = (pu, pv, now, player_lat, p_off)
+            self._interp_curr['player'] = (ps.prev_seg_idx or 0, player_lat, now, p_off)
             self._last_packet_time = now
 
             # Follow player if enabled
@@ -1655,11 +1672,12 @@ class TrackMapApp:
                         car_id=f'car_{i}', speed_kmh=car_speed,
                         dt=real_dt, player_seg_idx=player_seg)
 
-                    # Store interpolation state
+                    # Store interpolation state (seg_idx, offset, time, off_track)
                     cid = f'car_{i}'
+                    cs = _get_car_state(cid)
                     if cid in self._interp_curr:
                         self._interp_prev[cid] = self._interp_curr[cid]
-                    self._interp_curr[cid] = (cu, cv, now, car_lat, car_off)
+                    self._interp_curr[cid] = (cs.prev_seg_idx or 0, car_lat, now, car_off)
                 else:
                     car_pos = 0
                     car_off = False
@@ -1672,7 +1690,7 @@ class TrackMapApp:
                 cid = f'car_{i}'
                 if cid in self._interp_curr:
                     cu, cv = self._interp_pos(cid, render_now)
-                    _, _, _, car_lat, car_off = self._interp_curr[cid]
+                    _, _, _, car_off = self._interp_curr[cid]
 
                     if i < len(all_cars):
                         car_pos = all_cars[i].get('position', 0)
