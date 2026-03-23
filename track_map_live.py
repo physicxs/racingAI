@@ -406,6 +406,9 @@ STRICT_DIST_SQ = 6.0 * 6.0     # 6m — strict (TRACKING)
 RELAXED_DIST_SQ = 10.0 * 10.0  # 10m — relaxed (UNSTABLE)
 
 
+_in_render_loop = False  # runtime guard: projection must not be called during render
+
+
 def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
                            speed_kmh=0, dt=1/30, player_seg_idx=None):
     """Compute car's 2D position using state-machine projection.
@@ -415,6 +418,8 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
 
     Returns (u, v, lateral_offset, is_off_track).
     """
+    if _in_render_loop:
+        raise RuntimeError("Projection called during render loop — architecture violation")
     state = _get_car_state(car_id)
 
     # Fallback: if world→2D fails, hold position briefly then escalate
@@ -1723,14 +1728,25 @@ class TrackMapApp:
                                _ST_UNSTABLE: 'UNSTBL', _ST_RECOVERING: 'RECOV'}
                 hw = self.track_map['half_widths'][ps.prev_seg_idx] if ps.prev_seg_idx else 0
                 print(f"[DEBUG] player {phase_names.get(ps.phase, '?')}"
-                      f" seg={ps.prev_seg_idx} lat={player_lat:+.1f}m"
+                      f" seg={ps.prev_seg_idx} offset={player_lat:+.1f}m"
                       f" hw={hw:.1f}m inv={ps.invalid_count} spd={speed}",
                       file=sys.stderr, flush=True)
+                if abs(player_lat) < 2.0 and hw > 4.0:
+                    print(f"[DEBUG] WARNING: offset < 2m with hw={hw:.1f}m"
+                          f" — possible compression", file=sys.stderr, flush=True)
 
     # ─── Render (every frame, interpolation only) ─────────────────────
 
     def _render_cars(self):
         """Render all cars using interpolated positions. NO projection here."""
+        global _in_render_loop
+        _in_render_loop = True
+        try:
+            self._render_cars_impl()
+        finally:
+            _in_render_loop = False
+
+    def _render_cars_impl(self):
         if not self._interp_curr:
             return
 
