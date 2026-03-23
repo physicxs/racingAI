@@ -1640,163 +1640,113 @@ class TrackMapApp:
         pos_v = vs[idx] + nvs[idx] * offset
         return pos_u, pos_v
 
-    # ─── Update Loop ─────────────────────────────────────────────────────
+    # ─── Telemetry Processing (ONLY on new UDP data) ────────────────────
 
-    def _update(self):
-        """Poll telemetry and update canvas."""
-        data = self.reader.get_latest()
+    def _process_telemetry(self, data):
+        """Process new telemetry: compute projections and update interp state.
+        Called ONLY when new data arrives (~30 Hz). NO rendering here."""
+        player = data.get('player', {})
+        speed = player.get('speed', 0)
+        lap_dist = player.get('lapDistance', 0.0)
 
-        if data:
-            self.last_data = data
-            player = data.get('player', {})
-            lap_dist = player.get('lapDistance', 0.0)
-            position = player.get('position', 0)
-            lap_num = player.get('lapNumber', 0)
-            speed = player.get('speed', 0)
-            gear = player.get('gear', 0)
-            throttle = player.get('throttle', 0.0)
-            brake = player.get('brake', 0.0)
+        # Compute real dt
+        session_time = data.get('sessionTime', 0)
+        if self.prev_session_time > 0 and session_time > self.prev_session_time:
+            real_dt = max(0.01, min(0.05, session_time - self.prev_session_time))
+        else:
+            real_dt = 1.0 / 30.0
+        self.prev_session_time = session_time
 
-            # Compute real dt from session timestamps
-            session_time = data.get('sessionTime', 0)
-            if self.prev_session_time > 0 and session_time > self.prev_session_time:
-                real_dt = session_time - self.prev_session_time
-                real_dt = max(0.01, min(0.05, real_dt))  # clamp
-            else:
-                real_dt = 1.0 / 30.0
-            self.prev_session_time = session_time
+        player_world_pos = player.get('world_pos_m')
 
-            # Player world position for lateral offset
-            player_world_pos = player.get('world_pos_m')
+        # Player projection
+        pu, pv, player_lat, p_off = compute_track_position(
+            self.track_map, player_world_pos, lap_dist,
+            car_id='player', speed_kmh=speed, dt=real_dt)
 
-            # Compute player position FIRST (shared reference for nearby cars)
-            pu, pv, player_lat, p_off = compute_track_position(
-                self.track_map, player_world_pos, lap_dist,
-                car_id='player', speed_kmh=speed, dt=real_dt)
+        now = time.time()
+        ps = _get_car_state('player')
+        if 'player' in self._interp_curr:
+            self._interp_prev['player'] = self._interp_curr['player']
+        self._interp_curr['player'] = (ps.prev_seg_idx or 0, player_lat, now, p_off)
+        self._last_packet_time = now
 
-            # Store interpolation state for player (seg_idx, offset, time, off_track)
-            now = time.time()
-            ps = _get_car_state('player')
-            if 'player' in self._interp_curr:
-                self._interp_prev['player'] = self._interp_curr['player']
-            self._interp_curr['player'] = (ps.prev_seg_idx or 0, player_lat, now, p_off)
-            self._last_packet_time = now
+        # Follow player
+        if self.follow_player:
+            self.transform.center_on(pu, pv)
+            self.needs_redraw = True
 
-            # Follow player if enabled
-            if self.follow_player:
-                self.transform.center_on(pu, pv)
-                self.needs_redraw = True
+        player_seg = ps.prev_seg_idx
 
-            # Redraw track if zoom/pan/resize changed
-            if self.needs_redraw:
-                self._full_redraw()
-            player_seg = _get_car_state('player').prev_seg_idx
+        # Other cars projection
+        all_cars = data.get('allCars', [])
+        for car in all_cars:
+            car_index = car.get('carIndex', -1)
+            if car_index < 0:
+                continue
+            cid = f'ci_{car_index}'
+            car_dist = car.get('lapDistance', 0.0)
+            car_world_pos = car.get('world_pos_m')
+            car_speed = car.get('speed', 0)
+            cu, cv, car_lat, car_off = compute_track_position(
+                self.track_map, car_world_pos, car_dist,
+                car_id=cid, speed_kmh=car_speed,
+                dt=real_dt, player_seg_idx=player_seg)
 
-            # Update other cars using carIndex as stable identity
-            all_cars = data.get('allCars', [])
-            debug_offsets = []
-            active_car_ids = set()
+            cs = _get_car_state(cid)
+            if cid in self._interp_curr:
+                self._interp_prev[cid] = self._interp_curr[cid]
+            self._interp_curr[cid] = (cs.prev_seg_idx or 0, car_lat, now, car_off)
 
-            for car in all_cars:
-                car_index = car.get('carIndex', -1)
-                if car_index < 0:
-                    continue
-                cid = f'ci_{car_index}'  # stable identity from carIndex
-                active_car_ids.add(cid)
+        # Collision detection (telemetry-driven, not render-driven)
+        fl_wing = player.get('frontLeftWingDamage', 0)
+        fr_wing = player.get('frontRightWingDamage', 0)
+        rear_wing = player.get('rearWingDamage', 0)
+        floor_dmg = player.get('floorDamage', 0)
+        total_damage = fl_wing + fr_wing + rear_wing + floor_dmg
+        if total_damage > self.prev_damage + 1:
+            self.collision_frames = 30
+        self.prev_damage = total_damage
 
-                car_dist = car.get('lapDistance', 0.0)
-                car_pos = car.get('position', 0)
-                car_world_pos = car.get('world_pos_m')
-                car_speed = car.get('speed', 0)
-                cu, cv, car_lat, car_off = compute_track_position(
-                    self.track_map, car_world_pos, car_dist,
-                    car_id=cid, speed_kmh=car_speed,
-                    dt=real_dt, player_seg_idx=player_seg)
+        self.speed_history.append(speed)
+        if len(self.speed_history) > 9:
+            self.speed_history.pop(0)
+        if len(self.speed_history) >= 9 and max(self.speed_history) - speed > 40:
+            self.collision_frames = 30
+        self.prev_speed = speed
 
-                # Store interpolation state (seg_idx, offset, time, off_track)
-                cs = _get_car_state(cid)
-                if cid in self._interp_curr:
-                    self._interp_prev[cid] = self._interp_curr[cid]
-                self._interp_curr[cid] = (cs.prev_seg_idx or 0, car_lat, now, car_off)
+        # Debug logging
+        if self.debug:
+            self.debug_frame_count += 1
+            if self.debug_frame_count % 30 == 1:
+                phase_names = {_ST_INIT: 'INIT', _ST_TRACKING: 'TRACK',
+                               _ST_UNSTABLE: 'UNSTBL', _ST_RECOVERING: 'RECOV'}
+                hw = self.track_map['half_widths'][ps.prev_seg_idx] if ps.prev_seg_idx else 0
+                print(f"[DEBUG] player {phase_names.get(ps.phase, '?')}"
+                      f" seg={ps.prev_seg_idx} lat={player_lat:+.1f}m"
+                      f" hw={hw:.1f}m inv={ps.invalid_count} spd={speed}",
+                      file=sys.stderr, flush=True)
 
-            # ── Interpolated rendering ──
-            render_now = time.time()
+    # ─── Render (every frame, interpolation only) ─────────────────────
 
-            # Map active cars to marker slots (sorted by position for stable ordering)
-            render_cars = []
-            for car in all_cars:
-                car_index = car.get('carIndex', -1)
-                if car_index < 0:
-                    continue
-                cid = f'ci_{car_index}'
-                if cid in self._interp_curr:
-                    render_cars.append((cid, car.get('position', 0)))
+    def _render_cars(self):
+        """Render all cars using interpolated positions. NO projection here."""
+        if not self._interp_curr:
+            return
 
-            for i in range(self.MAX_OTHER_CARS):
-                if i < len(render_cars):
-                    cid, car_pos = render_cars[i]
-                    cu, cv = self._interp_pos(cid, render_now)
-                    _, _, _, car_off = self._interp_curr[cid]
+        render_now = time.time()
+        data = self.last_data or {}
+        player = data.get('player', {})
+        all_cars = data.get('allCars', [])
 
-                    ccx, ccy = self.transform.to_canvas(cu, cv)
-                    r = self.OTHER_CAR_RADIUS
-                    self.canvas.coords(
-                        self.other_car_markers[i],
-                        ccx - r, ccy - r, ccx + r, ccy + r
-                    )
-                    self.canvas.coords(
-                        self.other_car_labels[i],
-                        ccx, ccy - r - 2
-                    )
-                    self.canvas.itemconfig(
-                        self.other_car_labels[i], text=f'P{car_pos}' if car_pos else ''
-                    )
-                    if car_off:
-                        self.canvas.itemconfig(
-                            self.other_car_markers[i],
-                            fill='#ff9900', outline='#ffbb44')
-                    else:
-                        self.canvas.itemconfig(
-                            self.other_car_markers[i],
-                            fill=self.OTHER_CAR_COLOR, outline='#66bbff')
-                else:
-                    self.canvas.coords(
-                        self.other_car_markers[i], -20, -20, -20, -20
-                    )
-                    self.canvas.coords(self.other_car_labels[i], -20, -20)
-                    self.canvas.itemconfig(self.other_car_labels[i], text='')
-            # Interpolated player render position
+        # Player
+        if 'player' in self._interp_curr:
             ipu, ipv = self._interp_pos('player', render_now)
             cx, cy = self.transform.to_canvas(ipu, ipv)
             r = self.CAR_RADIUS
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
 
-            # Collision/state detection
-            # Only trigger on: damage increase OR speed drop >40 km/h in 0.3s (~9 frames)
-            fl_wing = player.get('frontLeftWingDamage', 0)
-            fr_wing = player.get('frontRightWingDamage', 0)
-            rear_wing = player.get('rearWingDamage', 0)
-            floor_dmg = player.get('floorDamage', 0)
-            total_damage = fl_wing + fr_wing + rear_wing + floor_dmg
-
-            damage_increased = total_damage > self.prev_damage + 1
-            self.prev_damage = total_damage
-
-            # Speed drop: check if speed dropped >40 km/h over last ~9 frames (0.3s)
-            self.speed_history.append(speed)
-            if len(self.speed_history) > 9:
-                self.speed_history.pop(0)
-            speed_drop = False
-            if len(self.speed_history) >= 9:
-                max_recent = max(self.speed_history)
-                if max_recent - speed > 40:
-                    speed_drop = True
-
-            if damage_increased or speed_drop:
-                self.collision_frames = 30
-
-            self.prev_speed = speed
-
+            _, _, _, p_off = self._interp_curr['player']
             if self.collision_frames > 0:
                 self.collision_frames -= 1
                 self.canvas.itemconfig(self.car_marker,
@@ -1809,7 +1759,7 @@ class TrackMapApp:
                                        fill='#ffffff', outline='#cccccc')
             self.canvas.tag_raise(self.car_marker)
 
-            # DRS indicator (Feature 1) — green ring when available, filled when deployed
+            # DRS indicator
             drs_allowed = player.get('drsAllowed', 0)
             drs_active = player.get('drs', 0)
             drs_tag = 'drs_indicator'
@@ -1829,102 +1779,107 @@ class TrackMapApp:
                     fill='', outline='#00aa33', width=2, dash=(3, 3),
                     tags=drs_tag)
 
-            # Debug validation: projection state logging
-            if self.debug:
-                self.debug_frame_count += 1
-                if self.debug_frame_count % 30 == 1:
-                    ps = _get_car_state('player')
-                    phase_names = {_ST_INIT: 'INIT', _ST_TRACKING: 'TRACK',
-                                   _ST_UNSTABLE: 'UNSTBL', _ST_RECOVERING: 'RECOV'}
-                    hw = self.track_map['half_widths'][ps.prev_seg_idx] if ps.prev_seg_idx else 0
-                    print(f"[DEBUG] player {phase_names.get(ps.phase, '?')}"
-                          f" seg={ps.prev_seg_idx} lat={player_lat:+.1f}m"
-                          f" hw={hw:.1f}m inv={ps.invalid_count} spd={speed}",
-                          file=sys.stderr, flush=True)
-                    for ci, car in enumerate(all_cars[:2]):
-                        car_idx = car.get('carIndex', -1)
-                        cid = f'ci_{car_idx}'
-                        cs = _get_car_state(cid)
-                        d = cs.prev_seg_idx - ps.prev_seg_idx if cs.prev_seg_idx is not None and ps.prev_seg_idx is not None else '?'
-                        print(f"[DEBUG]   ci_{car_idx} {phase_names.get(cs.phase, '?')}"
-                              f" seg={cs.prev_seg_idx} delta={d} inv={cs.invalid_count}",
-                              file=sys.stderr, flush=True)
-                    wp = player_world_pos or {}
-                    print(f"[DEBUG] Player P{position}: {player_lat:+.1f}m"
-                          f"  world=({wp.get('x',0):.1f},{wp.get('z',0):.1f})"
-                          f"  proj=({pu:.1f},{pv:.1f})",
-                          file=sys.stderr, flush=True)
-                    for line in debug_offsets:
-                        print(f"[DEBUG]{line}", file=sys.stderr, flush=True)
+        # Other cars
+        render_cars = []
+        for car in all_cars:
+            car_index = car.get('carIndex', -1)
+            if car_index < 0:
+                continue
+            cid = f'ci_{car_index}'
+            if cid in self._interp_curr:
+                render_cars.append((cid, car.get('position', 0)))
 
-            # HUD
+        for i in range(self.MAX_OTHER_CARS):
+            if i < len(render_cars):
+                cid, car_pos = render_cars[i]
+                cu, cv = self._interp_pos(cid, render_now)
+                _, _, _, car_off = self._interp_curr[cid]
+                ccx, ccy = self.transform.to_canvas(cu, cv)
+                r = self.OTHER_CAR_RADIUS
+                self.canvas.coords(
+                    self.other_car_markers[i],
+                    ccx - r, ccy - r, ccx + r, ccy + r)
+                self.canvas.coords(
+                    self.other_car_labels[i], ccx, ccy - r - 2)
+                self.canvas.itemconfig(
+                    self.other_car_labels[i],
+                    text=f'P{car_pos}' if car_pos else '')
+                if car_off:
+                    self.canvas.itemconfig(
+                        self.other_car_markers[i],
+                        fill='#ff9900', outline='#ffbb44')
+                else:
+                    self.canvas.itemconfig(
+                        self.other_car_markers[i],
+                        fill=self.OTHER_CAR_COLOR, outline='#66bbff')
+            else:
+                self.canvas.coords(
+                    self.other_car_markers[i], -20, -20, -20, -20)
+                self.canvas.coords(self.other_car_labels[i], -20, -20)
+                self.canvas.itemconfig(self.other_car_labels[i], text='')
+
+    # ─── Update Loop ──────────────────────────────────────────────────
+
+    def _update(self):
+        """Main loop: process telemetry if available, then render."""
+        data = self.reader.get_latest()
+
+        # Phase 1: Process new telemetry (projection) — only when data arrives
+        if data:
+            self.last_data = data
+            self._process_telemetry(data)
+
+        # Phase 2: Redraw track if needed
+        if self.needs_redraw:
+            self._full_redraw()
+
+        # Phase 3: Render cars (interpolation only) — every frame
+        self._render_cars()
+
+        # Phase 4: UI overlays (only update on new data)
+        if data:
+            player = data.get('player', {})
+            all_cars = data.get('allCars', [])
+            position = player.get('position', 0)
+            lap_num = player.get('lapNumber', 0)
+            speed = player.get('speed', 0)
+            gear = player.get('gear', 0)
+            throttle = player.get('throttle', 0.0)
+            brake = player.get('brake', 0.0)
+            gear_str = 'N' if gear == 0 else ('R' if gear < 0 else str(gear))
+
             n_cars = len(all_cars) + 1
-            hud = f"P{position}/{n_cars}  Lap {lap_num}  {speed} km/h  G{gear}"
+            hud = f"P{position}/{n_cars}  Lap {lap_num}  {speed} km/h  G{gear_str}"
             hud += f"  T:{throttle:.0%}  B:{brake:.0%}"
             self.canvas.itemconfig(self.hud_text, text=hud)
 
-            # Zoom info
             zoom_pct = int(self.transform.zoom * 100)
             follow_str = '  [F]ollow ON' if self.follow_player else ''
-            if self.replay_mode:
-                self.canvas.itemconfig(
-                    self.zoom_text,
-                    text=f'Zoom: {zoom_pct}%{follow_str}  [R]eset  Scroll=Zoom  Drag=Pan'
-                )
-            else:
-                self.canvas.itemconfig(
-                    self.zoom_text,
-                    text=f'Zoom: {zoom_pct}%{follow_str}  [R]eset  Scroll=Zoom  Drag=Pan'
-                )
+            self.canvas.itemconfig(
+                self.zoom_text,
+                text=f'Zoom: {zoom_pct}%{follow_str}  [R]eset  Scroll=Zoom  Drag=Pan')
 
-            # Replay progress bar + status
             if self.replay_mode and isinstance(self.reader, ReplayReader):
                 progress = self.reader.progress()
                 bar_y = self.CANVAS_H - 30
                 fill_w = progress * self.CANVAS_W
                 self.canvas.coords(
-                    self.progress_bg, 0, bar_y, self.CANVAS_W, bar_y + self.PROGRESS_BAR_H
-                )
+                    self.progress_bg, 0, bar_y, self.CANVAS_W, bar_y + self.PROGRESS_BAR_H)
                 self.canvas.coords(
-                    self.progress_fill, 0, bar_y, fill_w, bar_y + self.PROGRESS_BAR_H
-                )
+                    self.progress_fill, 0, bar_y, fill_w, bar_y + self.PROGRESS_BAR_H)
                 self.canvas.tag_raise(self.progress_bg)
                 self.canvas.tag_raise(self.progress_fill)
 
                 cur = format_time(self.reader.current_time_s())
                 tot = format_time(self.reader.total_duration_s())
-                state = "Playing" if self.reader.playing else "Paused"
+                rstate = "Playing" if self.reader.playing else "Paused"
                 spd = self.reader.speed
                 spd_str = f"{spd:.1f}x" if spd != int(spd) else f"{int(spd)}x"
                 self.canvas.itemconfig(
                     self.replay_text,
-                    text=f"{state}  {cur} / {tot}  [{spd_str}]  Space=Play/Pause  \u2190\u2192=\u00b15s  1-4=Speed"
-                )
+                    text=f"{rstate}  {cur} / {tot}  [{spd_str}]  Space=Play/Pause  \u2190\u2192=\u00b15s  1-4=Speed")
 
-            # Update stats panel
             self._draw_stats(data)
-        else:
-            # No new telemetry — still render interpolated positions
-            if self._interp_curr and self.last_data:
-                render_now = time.time()
-                # Interpolate player
-                if 'player' in self._interp_curr:
-                    ipu, ipv = self._interp_pos('player', render_now)
-                    cx, cy = self.transform.to_canvas(ipu, ipv)
-                    r = self.CAR_RADIUS
-                    self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
-                # Interpolate other cars (using stored interp keys)
-                car_cids = [k for k in self._interp_curr if k != 'player']
-                for i, cid in enumerate(car_cids[:self.MAX_OTHER_CARS]):
-                    cu, cv = self._interp_pos(cid, render_now)
-                    ccx, ccy = self.transform.to_canvas(cu, cv)
-                    r = self.OTHER_CAR_RADIUS
-                    self.canvas.coords(
-                            self.other_car_markers[i],
-                            ccx - r, ccy - r, ccx + r, ccy + r)
-
-            if self.needs_redraw:
-                self._full_redraw()
 
         self.root.after(self.UPDATE_MS, self._update)
 
