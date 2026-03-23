@@ -293,7 +293,7 @@ class CarProjectionState:
     __slots__ = ('phase', 'prev_seg_idx', 'prev_u', 'prev_v',
                  'prev_world_u', 'prev_world_v', 'invalid_count',
                  'prev_lateral', 'off_track_count',
-                 'vel_u', 'vel_v')
+                 'vel_u', 'vel_v', 'last_seen')
 
     def __init__(self):
         self.phase = _ST_INIT
@@ -305,8 +305,9 @@ class CarProjectionState:
         self.invalid_count = 0
         self.prev_lateral = 0.0
         self.off_track_count = 0
-        self.vel_u = 0.0  # last valid velocity direction
+        self.vel_u = 0.0
         self.vel_v = 0.0
+        self.last_seen = 0.0  # timestamp of last update
 
     def invalidate(self):
         """Force reinitialization."""
@@ -1671,6 +1672,7 @@ class TrackMapApp:
 
         now = time.time()
         ps = _get_car_state('player')
+        ps.last_seen = now
         if 'player' in self._interp_curr:
             self._interp_prev['player'] = self._interp_curr['player']
         self._interp_curr['player'] = (ps.prev_seg_idx or 0, player_lat, now, p_off)
@@ -1699,9 +1701,19 @@ class TrackMapApp:
                 dt=real_dt, player_seg_idx=player_seg)
 
             cs = _get_car_state(cid)
+            cs.last_seen = now
             if cid in self._interp_curr:
                 self._interp_prev[cid] = self._interp_curr[cid]
             self._interp_curr[cid] = (cs.prev_seg_idx or 0, car_lat, now, car_off)
+
+        # Cleanup stale cars (not seen for >3 seconds)
+        STALE_TIMEOUT = 3.0
+        stale_ids = [cid for cid, st in _car_states.items()
+                     if cid != 'player' and now - st.last_seen > STALE_TIMEOUT]
+        for cid in stale_ids:
+            del _car_states[cid]
+            self._interp_curr.pop(cid, None)
+            self._interp_prev.pop(cid, None)
 
         # Collision detection (telemetry-driven, not render-driven)
         fl_wing = player.get('frontLeftWingDamage', 0)
@@ -1734,8 +1746,8 @@ class TrackMapApp:
                 if abs(player_lat) < 2.0 and hw > 4.0:
                     print(f"[DEBUG] WARNING: offset < 2m with hw={hw:.1f}m"
                           f" — possible compression", file=sys.stderr, flush=True)
-                # State isolation check (first time only)
-                if self.debug_frame_count == 1:
+                # State isolation + tracking check
+                if self.debug_frame_count == 1 or self.debug_frame_count % 300 == 0:
                     ids = set()
                     for cid, st in _car_states.items():
                         addr = id(st)
@@ -1743,7 +1755,10 @@ class TrackMapApp:
                             print(f"[DEBUG] ERROR: shared state object at {addr}!",
                                   file=sys.stderr, flush=True)
                         ids.add(addr)
-                    print(f"[DEBUG] State isolation OK: {len(_car_states)} unique objects",
+                    tracked = sorted(k for k in _car_states if k != 'player')
+                    print(f"[DEBUG] Tracked: {len(_car_states)} cars ({tracked})",
+                          file=sys.stderr, flush=True)
+                    print(f"[DEBUG] State isolation OK: {len(ids)} unique objects",
                           file=sys.stderr, flush=True)
 
     # ─── Render (every frame, interpolation only) ─────────────────────
