@@ -326,14 +326,14 @@ def _get_car_state(car_id):
     return _car_states[car_id]
 
 
-CONTINUITY_LAMBDA = 0.5  # penalty per index difference
+CONTINUITY_LAMBDA = 0.3  # soft penalty per index difference
 
 
 def _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius,
                        prev_idx=None, vel_u=0, vel_v=0):
     """Search for best segment with direction-aware + continuity scoring.
 
-    score = distance + 0.5 * index_penalty + 0.5 * angle_penalty
+    score = distance + 0.3 * index_penalty + 0.3 * angle_penalty
     Rejects segments going opposite to car velocity (dot < -0.2).
 
     Returns (seg_idx, proj_u, proj_v, dist_sq, t_param).
@@ -390,7 +390,7 @@ def _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius,
             seg_len = math.sqrt(seg_len_sq)
             dot_dir = (seg_du * vel_u + seg_dv * vel_v) / seg_len
             angle_penalty = 1.0 - max(0.0, dot_dir)
-            score += 0.5 * angle_penalty
+            score += 0.3 * angle_penalty
 
         if score < best_score:
             best_score = score
@@ -505,7 +505,7 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
                     center_idx = player_seg_idx
 
         best_seg_idx, best_proj_u, best_proj_v, best_dist_sq, best_t = \
-            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 2,
+            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 5,
                                prev_idx=state.prev_seg_idx, vel_u=vu, vel_v=vv)
 
         if best_dist_sq < STRICT_DIST_SQ:
@@ -1636,14 +1636,10 @@ class TrackMapApp:
         # Interpolate offset
         offset = p_off + alpha * (c_off - p_off)
 
-        # Render offset scaling: counteract projection compression
-        OFFSET_SCALE = 1.25
-        offset_render = offset * OFFSET_SCALE
-
-        # Clamp to track width
+        # Clamp to track width (no scaling — raw offset)
         hws = self.track_map['half_widths']
         hw = hws[idx]
-        offset_render = max(-hw, min(hw, offset_render))
+        offset = max(-hw, min(hw, offset))
 
         # Reconstruct from track centerline + stored normals
         us = self.track_map['us']
@@ -1651,8 +1647,8 @@ class TrackMapApp:
         nus = self.track_map['normals_u']
         nvs = self.track_map['normals_v']
 
-        pos_u = us[idx] + nus[idx] * offset_render
-        pos_v = vs[idx] + nvs[idx] * offset_render
+        pos_u = us[idx] + nus[idx] * offset
+        pos_v = vs[idx] + nvs[idx] * offset
         return pos_u, pos_v
 
     # ─── Telemetry Processing (ONLY on new UDP data) ────────────────────
