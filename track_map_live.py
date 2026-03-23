@@ -403,8 +403,8 @@ def _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius,
     return best_seg_idx, best_proj_u, best_proj_v, best_dist_sq, best_t
 
 
-STRICT_DIST_SQ = 6.0 * 6.0     # 6m — strict (TRACKING)
-RELAXED_DIST_SQ = 10.0 * 10.0  # 10m — relaxed (UNSTABLE)
+STRICT_DIST_SQ = 10.0 * 10.0   # 10m — TRACKING
+RELAXED_DIST_SQ = 15.0 * 15.0  # 15m — UNSTABLE
 
 
 _in_render_loop = False  # runtime guard: projection must not be called during render
@@ -505,7 +505,7 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
                     center_idx = player_seg_idx
 
         best_seg_idx, best_proj_u, best_proj_v, best_dist_sq, best_t = \
-            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 5,
+            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 10,
                                prev_idx=state.prev_seg_idx, vel_u=vu, vel_v=vv)
 
         if best_dist_sq < STRICT_DIST_SQ:
@@ -536,7 +536,7 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
         center_idx = state.prev_seg_idx
 
         best_seg_idx, best_proj_u, best_proj_v, best_dist_sq, best_t = \
-            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 15,
+            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 30,
                                prev_idx=state.prev_seg_idx, vel_u=vu, vel_v=vv)
 
         if best_dist_sq < RELAXED_DIST_SQ:
