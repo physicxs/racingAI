@@ -1734,6 +1734,17 @@ class TrackMapApp:
                 if abs(player_lat) < 2.0 and hw > 4.0:
                     print(f"[DEBUG] WARNING: offset < 2m with hw={hw:.1f}m"
                           f" — possible compression", file=sys.stderr, flush=True)
+                # State isolation check (first time only)
+                if self.debug_frame_count == 1:
+                    ids = set()
+                    for cid, st in _car_states.items():
+                        addr = id(st)
+                        if addr in ids:
+                            print(f"[DEBUG] ERROR: shared state object at {addr}!",
+                                  file=sys.stderr, flush=True)
+                        ids.add(addr)
+                    print(f"[DEBUG] State isolation OK: {len(_car_states)} unique objects",
+                          file=sys.stderr, flush=True)
 
     # ─── Render (every frame, interpolation only) ─────────────────────
 
