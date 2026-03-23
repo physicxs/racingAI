@@ -505,7 +505,7 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
                     center_idx = player_seg_idx
 
         best_seg_idx, best_proj_u, best_proj_v, best_dist_sq, best_t = \
-            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 5,
+            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 2,
                                prev_idx=state.prev_seg_idx, vel_u=vu, vel_v=vv)
 
         if best_dist_sq < STRICT_DIST_SQ:
@@ -1636,14 +1636,23 @@ class TrackMapApp:
         # Interpolate offset
         offset = p_off + alpha * (c_off - p_off)
 
+        # Render offset scaling: counteract projection compression
+        OFFSET_SCALE = 1.25
+        offset_render = offset * OFFSET_SCALE
+
+        # Clamp to track width
+        hws = self.track_map['half_widths']
+        hw = hws[idx]
+        offset_render = max(-hw, min(hw, offset_render))
+
         # Reconstruct from track centerline + stored normals
         us = self.track_map['us']
         vs = self.track_map['vs']
         nus = self.track_map['normals_u']
         nvs = self.track_map['normals_v']
 
-        pos_u = us[idx] + nus[idx] * offset
-        pos_v = vs[idx] + nvs[idx] * offset
+        pos_u = us[idx] + nus[idx] * offset_render
+        pos_v = vs[idx] + nvs[idx] * offset_render
         return pos_u, pos_v
 
     # ─── Telemetry Processing (ONLY on new UDP data) ────────────────────
