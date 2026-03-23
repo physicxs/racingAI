@@ -1606,37 +1606,56 @@ class TrackMapApp:
             self.reader.set_speed(speed)
 
     def _interp_pos(self, car_id, now):
-        """Interpolate seg_idx and offset, reconstruct from track normals."""
+        """Velocity-based s prediction + offset interpolation, reconstruct from normals."""
         curr = self._interp_curr.get(car_id)
         prev = self._interp_prev.get(car_id)
         if curr is None:
             return 0, 0
 
+        n = self.track_map['num_points']
         c_idx, c_off, t1, _ = curr
+
         if prev is None:
-            alpha = 1.0
-            p_idx, p_off, t0 = c_idx, c_off, t1
+            idx = c_idx % n
+            offset = c_off
         else:
             p_idx, p_off, t0, _ = prev
-            dt = t1 - t0
-            if dt > 0:
-                alpha = max(0.0, min(1.0, (now - t0) / dt))
+            dt_packet = t1 - t0
+
+            # S velocity (indices per second)
+            s_delta = c_idx - p_idx
+            if s_delta > n // 2:
+                s_delta -= n
+            elif s_delta < -n // 2:
+                s_delta += n
+
+            if dt_packet > 0.001:
+                s_velocity = s_delta / dt_packet
             else:
-                alpha = 1.0
+                s_velocity = 0
 
-        # Interpolate index (handle wrap-around)
-        n = self.track_map['num_points']
-        delta = c_idx - p_idx
-        if delta > n // 2:
-            delta -= n
-        elif delta < -n // 2:
-            delta += n
-        idx = int(round(p_idx + alpha * delta)) % n
+            # Predict forward from curr using velocity
+            time_since_packet = now - t1
+            s_predicted = c_idx + s_velocity * time_since_packet
 
-        # Interpolate offset
-        offset = p_off + alpha * (c_off - p_off)
+            # Light s smoothing
+            render_key = f'_rs_{car_id}'
+            prev_render_s = getattr(self, render_key, None)
+            if prev_render_s is not None:
+                s_predicted = 0.8 * prev_render_s + 0.2 * s_predicted
+            setattr(self, render_key, s_predicted)
 
-        # Clamp to track width (no scaling — raw offset)
+            idx = int(round(s_predicted)) % n
+
+            # Offset: light smoothing
+            render_off_key = f'_ro_{car_id}'
+            prev_render_off = getattr(self, render_off_key, None)
+            offset = c_off
+            if prev_render_off is not None:
+                offset = 0.9 * prev_render_off + 0.1 * c_off
+            setattr(self, render_off_key, offset)
+
+        # Clamp to track width
         hws = self.track_map['half_widths']
         hw = hws[idx]
         offset = max(-hw, min(hw, offset))
@@ -1678,9 +1697,18 @@ class TrackMapApp:
         now = time.time()
         ps = _get_car_state('player')
         ps.last_seen = now
+        new_idx = ps.prev_seg_idx or 0
+        # Reject noisy s updates (>15 index jump)
         if 'player' in self._interp_curr:
+            prev_idx = self._interp_curr['player'][0]
+            n = self.track_map['num_points']
+            jump = abs(new_idx - prev_idx)
+            if jump > n // 2:
+                jump = n - jump
+            if jump > 15:
+                new_idx = prev_idx  # keep previous
             self._interp_prev['player'] = self._interp_curr['player']
-        self._interp_curr['player'] = (ps.prev_seg_idx or 0, player_lat, now, p_off)
+        self._interp_curr['player'] = (new_idx, player_lat, now, p_off)
         self._last_packet_time = now
 
         # Follow player
@@ -1691,6 +1719,7 @@ class TrackMapApp:
         player_seg = ps.prev_seg_idx
 
         # Other cars projection
+        n = self.track_map['num_points']
         all_cars = data.get('allCars', [])
         for car in all_cars:
             car_index = car.get('carIndex', -1)
@@ -1707,9 +1736,17 @@ class TrackMapApp:
 
             cs = _get_car_state(cid)
             cs.last_seen = now
+            new_idx = cs.prev_seg_idx or 0
+            # Reject noisy s updates (>15 index jump)
             if cid in self._interp_curr:
+                prev_idx = self._interp_curr[cid][0]
+                jump = abs(new_idx - prev_idx)
+                if jump > n // 2:
+                    jump = n - jump
+                if jump > 15:
+                    new_idx = prev_idx
                 self._interp_prev[cid] = self._interp_curr[cid]
-            self._interp_curr[cid] = (cs.prev_seg_idx or 0, car_lat, now, car_off)
+            self._interp_curr[cid] = (new_idx, car_lat, now, car_off)
 
         # Cleanup stale cars (not seen for >3 seconds)
         STALE_TIMEOUT = 3.0
