@@ -1688,19 +1688,7 @@ class TrackMapApp:
         ps = _get_car_state('player')
         ps.last_seen = now
         new_s = ps.prev_seg_idx or 0
-        # Clamp + smooth S at state level
         if 'player' in self._interp_curr:
-            prev_s = self._interp_curr['player'][0]
-            prev_off = self._interp_curr['player'][1]
-            ds = new_s - prev_s
-            n = self.track_map['num_points']
-            if ds > n // 2: ds -= n
-            elif ds < -n // 2: ds += n
-            if abs(ds) > 10:
-                new_s = prev_s  # reject noisy jump
-            else:
-                new_s = int(round(0.85 * prev_s + 0.15 * new_s)) % n
-            player_lat = 0.9 * prev_off + 0.1 * player_lat
             self._interp_prev['player'] = self._interp_curr['player']
         self._interp_curr['player'] = (new_s, player_lat, now, p_off)
         self._last_packet_time = now
@@ -1730,36 +1718,9 @@ class TrackMapApp:
             cs = _get_car_state(cid)
             cs.last_seen = now
             new_s = cs.prev_seg_idx or 0
-            n = self.track_map['num_points']
-            # Clamp + smooth S at state level
             if cid in self._interp_curr:
-                prev_s = self._interp_curr[cid][0]
-                prev_off = self._interp_curr[cid][1]
-                ds = new_s - prev_s
-                if ds > n // 2: ds -= n
-                elif ds < -n // 2: ds += n
-                if abs(ds) > 10:
-                    new_s = prev_s
-                else:
-                    new_s = int(round(0.85 * prev_s + 0.15 * new_s)) % n
-                car_lat = 0.9 * prev_off + 0.1 * car_lat
                 self._interp_prev[cid] = self._interp_curr[cid]
             self._interp_curr[cid] = (new_s, car_lat, now, car_off)
-
-        # Soft separation: push apart clustered cars
-        car_entries = [(cid, self._interp_curr[cid][0])
-                       for cid in self._interp_curr if cid != 'player']
-        if len(car_entries) > 1:
-            car_entries.sort(key=lambda x: x[1])
-            n = self.track_map['num_points']
-            for i in range(1, len(car_entries)):
-                gap = car_entries[i][1] - car_entries[i-1][1]
-                if gap < 0: gap += n
-                if gap < 1.5:
-                    cid_push = car_entries[i][0]
-                    old = self._interp_curr[cid_push]
-                    pushed_s = (old[0] + int((1.5 - gap) * 0.5)) % n
-                    self._interp_curr[cid_push] = (pushed_s, old[1], old[2], old[3])
 
         # Cleanup stale cars (not seen for >3 seconds)
         STALE_TIMEOUT = 3.0
