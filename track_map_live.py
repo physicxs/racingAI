@@ -1606,35 +1606,44 @@ class TrackMapApp:
             self.reader.set_speed(speed)
 
     def _interp_pos(self, car_id, now):
-        """Interpolate seg_idx and offset, reconstruct from track normals."""
+        """Interpolate seg_idx and offset, reconstruct from track normals.
+        Returns (u, v) or None if no data available."""
         curr = self._interp_curr.get(car_id)
-        prev = self._interp_prev.get(car_id)
         if curr is None:
-            return 0, 0
+            return None  # no data — don't render
 
         c_idx, c_off, t1, _ = curr
+        prev = self._interp_prev.get(car_id)
+
         if prev is None:
-            alpha = 1.0
-            p_idx, p_off, t0 = c_idx, c_off, t1
+            # Only have one frame — use it directly
+            idx = c_idx
+            offset = c_off
         else:
             p_idx, p_off, t0, _ = prev
             dt = t1 - t0
+
             if dt > 0:
-                alpha = max(0.0, min(1.0, (now - t0) / dt))
+                # Allow slight extrapolation (up to 1.2) to prevent freeze
+                alpha = max(0.0, min(1.2, (now - t0) / dt))
             else:
                 alpha = 1.0
 
-        # Interpolate index (handle wrap-around)
-        n = self.track_map['num_points']
-        delta = c_idx - p_idx
-        if delta > n // 2:
-            delta -= n
-        elif delta < -n // 2:
-            delta += n
-        idx = int(round(p_idx + alpha * delta)) % n
+            # Interpolate index (handle wrap-around)
+            n = self.track_map['num_points']
+            delta = c_idx - p_idx
+            if delta > n // 2:
+                delta -= n
+            elif delta < -n // 2:
+                delta += n
+            idx = int(round(p_idx + alpha * delta)) % n
 
-        # Interpolate offset
-        offset = p_off + alpha * (c_off - p_off)
+            # Interpolate offset
+            offset = p_off + alpha * (c_off - p_off)
+
+        # Normalize index
+        n = self.track_map['num_points']
+        idx = idx % n
 
         # Clamp to track width
         hws = self.track_map['half_widths']
@@ -1829,7 +1838,10 @@ class TrackMapApp:
 
         # Player
         if 'player' in self._interp_curr:
-            ipu, ipv = self._interp_pos('player', render_now)
+            result = self._interp_pos('player', render_now)
+            if result is None:
+                return
+            ipu, ipv = result
             cx, cy = self.transform.to_canvas(ipu, ipv)
             r = self.CAR_RADIUS
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
@@ -1880,7 +1892,10 @@ class TrackMapApp:
         for i in range(self.MAX_OTHER_CARS):
             if i < len(render_cars):
                 cid, car_pos = render_cars[i]
-                cu, cv = self._interp_pos(cid, render_now)
+                result = self._interp_pos(cid, render_now)
+                if result is None:
+                    continue
+                cu, cv = result
                 _, _, _, car_off = self._interp_curr[cid]
                 ccx, ccy = self.transform.to_canvas(cu, cv)
                 r = self.OTHER_CAR_RADIUS
