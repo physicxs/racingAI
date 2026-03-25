@@ -1628,7 +1628,18 @@ class TrackMapApp:
                 s_render = float(c_idx)
                 offset = c_off
             else:
-                alpha = max(0.05, min(0.95, (now - t0) / dt))
+                alpha = max(0.0, min(1.2, (now - t0) / dt))
+
+                # Per-car alpha smoothing
+                ak = f'_ra_{car_id}'
+                prev_alpha = getattr(self, ak, None)
+                if prev_alpha is not None:
+                    # Clamp extreme jumps
+                    da = alpha - prev_alpha
+                    if abs(da) > 0.3:
+                        alpha = prev_alpha + (0.3 if da > 0 else -0.3)
+                    alpha = 0.8 * prev_alpha + 0.2 * alpha
+                setattr(self, ak, alpha)
 
                 # Interpolate index (handle wrap-around)
                 delta = c_idx - p_idx
