@@ -1805,7 +1805,8 @@ class TrackMapApp:
         if not self._interp_curr:
             return
 
-        render_now = time.time()
+        INTERP_DELAY = 0.1  # render 100ms behind live — ensures two frames for interpolation
+        render_now = time.time() - INTERP_DELAY
         data = self.last_data or {}
         player = data.get('player', {})
         all_cars = data.get('allCars', [])
