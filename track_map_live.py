@@ -1605,14 +1605,8 @@ class TrackMapApp:
         if isinstance(self.reader, ReplayReader):
             self.reader.set_speed(speed)
 
-    @staticmethod
-    def _smoothstep(t):
-        """Hermite smoothstep: smooth acceleration/deceleration."""
-        t = max(0.0, min(1.0, t))
-        return t * t * (3 - 2 * t)
-
     def _interp_pos(self, car_id, now):
-        """Interpolate seg_idx and offset with smoothstep + render damping.
+        """Interpolate seg_idx and offset, reconstruct from track normals.
         Returns (u, v) or None if no data available."""
         curr = self._interp_curr.get(car_id)
         if curr is None:
@@ -1620,60 +1614,34 @@ class TrackMapApp:
 
         c_idx, c_off, t1, _ = curr
         prev = self._interp_prev.get(car_id)
-        n = self.track_map['num_points']
 
         if prev is None:
-            s_render = float(c_idx)
+            idx = c_idx
             offset = c_off
         else:
             p_idx, p_off, t0, _ = prev
             dt = t1 - t0
 
-            if dt < 0.01:
-                alpha = 1.0
-            else:
+            if dt > 0:
                 alpha = max(0.0, min(1.2, (now - t0) / dt))
-
-            # Smoothstep for fluid acceleration/deceleration
-            alpha_smooth = self._smoothstep(min(alpha, 1.0))
-            # Blend: use smoothstep up to 1.0, linear extrapolation beyond
-            if alpha <= 1.0:
-                a = alpha_smooth
             else:
-                a = 1.0 + (alpha - 1.0)  # linear extrapolation past 1.0
+                alpha = 1.0
 
-            # Interpolate index (wrap-safe)
+            # Interpolate index (handle wrap-around)
+            n = self.track_map['num_points']
             delta = c_idx - p_idx
             if delta > n // 2:
                 delta -= n
             elif delta < -n // 2:
                 delta += n
-            s_render = p_idx + a * delta
+            idx = int(round(p_idx + alpha * delta)) % n
 
             # Interpolate offset
-            offset = p_off + a * (c_off - p_off)
+            offset = p_off + alpha * (c_off - p_off)
 
-        # Render-space damping (light, per-car)
-        rk_s = f'_rds_{car_id}'
-        rk_o = f'_rdo_{car_id}'
-        prev_rs = getattr(self, rk_s, None)
-        prev_ro = getattr(self, rk_o, None)
-
-        if prev_rs is not None:
-            # Micro-jump clamp: max 5 indices per render frame
-            ds = s_render - prev_rs
-            if ds > n // 2: ds -= n
-            elif ds < -n // 2: ds += n
-            if abs(ds) > 5:
-                s_render = prev_rs + (5 if ds > 0 else -5)
-            # Light damping
-            s_render = 0.9 * prev_rs + 0.1 * s_render
-            offset = 0.9 * prev_ro + 0.1 * offset
-
-        setattr(self, rk_s, s_render)
-        setattr(self, rk_o, offset)
-
-        idx = int(round(s_render)) % n
+        # Normalize index
+        n = self.track_map['num_points']
+        idx = idx % n
 
         # Clamp to track width
         hws = self.track_map['half_widths']
