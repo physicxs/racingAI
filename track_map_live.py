@@ -1814,11 +1814,19 @@ class TrackMapApp:
             return
 
         FRAME_DT = 1.0 / 30.0
-        INTERP_DELAY = 2 * FRAME_DT  # ~67ms — aligned with telemetry cadence
+        INTERP_DELAY = 2 * FRAME_DT  # ~67ms
         render_now = time.time() - INTERP_DELAY
+        # Clamp: never render before first packet arrived
+        if self._last_packet_time > 0:
+            render_now = max(render_now, self._last_packet_time - 0.5)
         data = self.last_data or {}
         player = data.get('player', {})
         all_cars = data.get('allCars', [])
+
+        # Compute physically-accurate car radius (2m car width → pixels)
+        ppm = self.transform.base_scale * self.transform.zoom  # pixels per meter
+        car_r = max(3, min(8, int(round(2.0 * ppm / 2))))  # 2m width → radius
+        other_r = max(2, min(6, int(round(1.8 * ppm / 2))))
 
         # Player
         if 'player' in self._interp_curr:
@@ -1827,7 +1835,7 @@ class TrackMapApp:
                 return
             ipu, ipv = result
             cx, cy = self.transform.to_canvas(ipu, ipv)
-            r = self.CAR_RADIUS
+            r = car_r
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
 
             _, _, _, p_off = self._interp_curr['player']
@@ -1882,7 +1890,7 @@ class TrackMapApp:
                 cu, cv = result
                 _, _, _, car_off = self._interp_curr[cid]
                 ccx, ccy = self.transform.to_canvas(cu, cv)
-                r = self.OTHER_CAR_RADIUS
+                r = other_r
                 self.canvas.coords(
                     self.other_car_markers[i],
                     ccx - r, ccy - r, ccx + r, ccy + r)
