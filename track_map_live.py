@@ -1614,34 +1614,49 @@ class TrackMapApp:
 
         c_idx, c_off, t1, _ = curr
         prev = self._interp_prev.get(car_id)
+        n = self.track_map['num_points']
 
         if prev is None:
-            idx = c_idx
+            s_render = float(c_idx)
             offset = c_off
         else:
             p_idx, p_off, t0, _ = prev
             dt = t1 - t0
 
-            if dt > 0:
-                alpha = max(0.0, min(1.2, (now - t0) / dt))
+            # Tiny frame guard
+            if dt < 0.005:
+                s_render = float(c_idx)
+                offset = c_off
             else:
-                alpha = 1.0
+                alpha = max(0.0, min(1.2, (now - t0) / dt))
 
-            # Interpolate index (handle wrap-around)
-            n = self.track_map['num_points']
-            delta = c_idx - p_idx
-            if delta > n // 2:
-                delta -= n
-            elif delta < -n // 2:
-                delta += n
-            idx = int(round(p_idx + alpha * delta)) % n
+                # Interpolate index (handle wrap-around)
+                delta = c_idx - p_idx
+                if delta > n // 2:
+                    delta -= n
+                elif delta < -n // 2:
+                    delta += n
+                s_render = p_idx + alpha * delta
 
-            # Interpolate offset
-            offset = p_off + alpha * (c_off - p_off)
+                # Interpolate offset
+                offset = p_off + alpha * (c_off - p_off)
 
-        # Normalize index
-        n = self.track_map['num_points']
-        idx = idx % n
+        # Light render smoothing (per-car)
+        rk_s = f'_rs_{car_id}'
+        rk_o = f'_ro_{car_id}'
+        prev_s = getattr(self, rk_s, None)
+        prev_o = getattr(self, rk_o, None)
+        if prev_s is not None:
+            # Wrap-safe smoothing on s
+            ds = s_render - prev_s
+            if ds > n // 2: ds -= n
+            elif ds < -n // 2: ds += n
+            s_render = prev_s + 0.15 * ds
+            offset = 0.85 * prev_o + 0.15 * offset
+        setattr(self, rk_s, s_render)
+        setattr(self, rk_o, offset)
+
+        idx = int(round(s_render)) % n
 
         # Clamp to track width
         hws = self.track_map['half_widths']
