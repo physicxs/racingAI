@@ -1630,24 +1630,34 @@ class TrackMapApp:
             else:
                 alpha = max(0.0, min(1.2, (now - t0) / dt))
 
-                # Per-car alpha smoothing
+                # Per-car alpha smoothing (reset on new packet pair)
                 ak = f'_ra_{car_id}'
+                at = f'_rat_{car_id}'  # track which t1 we last smoothed for
                 prev_alpha = getattr(self, ak, None)
-                if prev_alpha is not None:
-                    # Clamp extreme jumps
+                prev_t1 = getattr(self, at, None)
+                if prev_alpha is not None and prev_t1 == t1:
+                    # Same packet pair — smooth alpha
                     da = alpha - prev_alpha
                     if abs(da) > 0.3:
                         alpha = prev_alpha + (0.3 if da > 0 else -0.3)
                     alpha = 0.8 * prev_alpha + 0.2 * alpha
+                # else: new packet pair arrived — use raw alpha (no smoothing)
                 setattr(self, ak, alpha)
+                setattr(self, at, t1)
 
-                # Interpolate index (handle wrap-around)
+                # Interpolate index (wrap-safe)
                 delta = c_idx - p_idx
                 if delta > n // 2:
                     delta -= n
                 elif delta < -n // 2:
                     delta += n
                 s_render = p_idx + alpha * delta
+
+                # Normalize s_render for wrap
+                if s_render >= n:
+                    s_render -= n
+                elif s_render < 0:
+                    s_render += n
 
                 # Interpolate offset
                 offset = p_off + alpha * (c_off - p_off)
