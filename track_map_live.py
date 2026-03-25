@@ -1628,7 +1628,7 @@ class TrackMapApp:
                 s_render = float(c_idx)
                 offset = c_off
             else:
-                alpha = max(0.0, min(1.2, (now - t0) / dt))
+                alpha = max(0.05, min(0.95, (now - t0) / dt))
 
                 # Interpolate index (handle wrap-around)
                 delta = c_idx - p_idx
@@ -1805,7 +1805,8 @@ class TrackMapApp:
         if not self._interp_curr:
             return
 
-        INTERP_DELAY = 0.1  # render 100ms behind live — ensures two frames for interpolation
+        FRAME_DT = 1.0 / 30.0
+        INTERP_DELAY = 2 * FRAME_DT  # ~67ms — aligned with telemetry cadence
         render_now = time.time() - INTERP_DELAY
         data = self.last_data or {}
         player = data.get('player', {})
