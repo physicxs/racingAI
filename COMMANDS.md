@@ -4,9 +4,9 @@ All commands are run from the project root directory.
 
 ## Prerequisites
 
-- Java 17+, Maven 3.6+
-- Python 3 (for GUI and recording scripts)
+- Python 3
 - F1 2025 with UDP telemetry enabled (Settings > Telemetry > UDP Telemetry: ON, Port: 20777, Rate: 30 Hz)
+- Java 17+ / Maven 3.6+ (only needed for UDPPacketSender test simulator)
 
 ## How to Build a Track Map
 
@@ -54,7 +54,7 @@ This outputs `Track Map Builds/track_0_coaching_report.json` with per-corner coa
 ### Step 6: Use the track map
 Watch live with the GUI (also auto-records telemetry for replay):
 ```bash
-/track_map_gui.sh "Track Map Builds/track_0_true_map.json"
+./track_map_gui.sh "Track Map Builds/track_0_true_map.json"
 ```
 
 Or replay a previous session:
@@ -145,14 +145,14 @@ mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.UDPPacketSender"
 
 ## Configuration
 
-Edit `src/main/resources/application.properties`:
+Settings are defined as constants at the top of `f1_receiver.py`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `udp.port` | 20777 | UDP listening port |
-| `output.rate.hz` | 30 | JSON output frame rate |
-| `nearby.cars.max` | 6 | Max nearby cars in output |
-| `nearby.cars.time.gap.seconds` | 1.5 | Time gap threshold (seconds) |
+| `UDP_PORT` | 20777 | UDP listening port |
+| `OUTPUT_RATE_HZ` | 30 | JSON output frame rate |
+| `NEARBY_MAX` | 6 | Max nearby cars in output |
+| `NEARBY_TIME_GAP` | 1.5 | Time gap threshold (seconds) |
 
 #Track List
 Track 0 - Australia
