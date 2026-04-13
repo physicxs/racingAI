@@ -903,6 +903,7 @@ class TrackMapApp:
         self._interp_prev = {}
         self._interp_curr = {}
         self._last_packet_time = 0
+        self._last_sim_time = 0
         self.collision_frames = 0  # frames remaining in collision state
         self.speed_history = []    # last ~10 frames for sustained decel check
         self.needs_redraw = False
@@ -1623,21 +1624,19 @@ class TrackMapApp:
             p_idx, p_off, t0, _ = prev
             dt = t1 - t0
 
-            # Large gap: don't interpolate across (e.g. lap boundary reset)
-            if dt > 0.1 or dt < 0.005:
+            # Compute index delta (wrap-safe)
+            delta = c_idx - p_idx
+            if delta > n // 2:
+                delta -= n
+            elif delta < -n // 2:
+                delta += n
+
+            # Large time gap or large index jump: snap, don't interpolate
+            if dt > 0.1 or dt < 0.001 or abs(delta) > n // 4:
                 s_render = float(c_idx)
                 offset = c_off
             else:
-                # Clamp denominator to prevent jitter from tiny dt
-                dt = max(dt, 0.016)
                 alpha = max(0.0, min(1.0, (now - t0) / dt))
-
-                # Interpolate index (wrap-safe)
-                delta = c_idx - p_idx
-                if delta > n // 2:
-                    delta -= n
-                elif delta < -n // 2:
-                    delta += n
                 s_render = p_idx + alpha * delta
 
                 # Normalize for wrap
@@ -1706,13 +1705,16 @@ class TrackMapApp:
             car_id='player', speed_kmh=speed, dt=real_dt)
 
         now = time.time()
+        # Use sessionTime as simulation clock (stable, game-driven)
+        sim_time = session_time if session_time > 0 else now
         ps = _get_car_state('player')
         ps.last_seen = now
         new_s = ps.prev_seg_idx or 0
         if 'player' in self._interp_curr:
             self._interp_prev['player'] = self._interp_curr['player']
-        self._interp_curr['player'] = (new_s, player_lat, now, p_off)
+        self._interp_curr['player'] = (new_s, player_lat, sim_time, p_off)
         self._last_packet_time = now
+        self._last_sim_time = sim_time
 
         # Follow player
         if self.follow_player:
@@ -1741,7 +1743,7 @@ class TrackMapApp:
             new_s = cs.prev_seg_idx or 0
             if cid in self._interp_curr:
                 self._interp_prev[cid] = self._interp_curr[cid]
-            self._interp_curr[cid] = (new_s, car_lat, now, car_off)
+            self._interp_curr[cid] = (new_s, car_lat, sim_time, car_off)
 
         # Cleanup stale cars (not seen for >3 seconds)
         STALE_TIMEOUT = 3.0
@@ -1815,10 +1817,14 @@ class TrackMapApp:
 
         FRAME_DT = 1.0 / 30.0
         INTERP_DELAY = 2 * FRAME_DT  # ~67ms
-        render_now = time.time() - INTERP_DELAY
-        # Clamp: never render before first packet arrived
-        if self._last_packet_time > 0:
-            render_now = max(render_now, self._last_packet_time - 0.5)
+        # Use simulation time (sessionTime) for stable interpolation
+        sim_now = getattr(self, '_last_sim_time', 0)
+        if sim_now > 0:
+            render_now = sim_now - INTERP_DELAY
+        else:
+            render_now = time.time() - INTERP_DELAY
+            if self._last_packet_time > 0:
+                render_now = max(render_now, self._last_packet_time - 0.5)
         data = self.last_data or {}
         player = data.get('player', {})
         all_cars = data.get('allCars', [])
