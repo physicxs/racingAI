@@ -1859,14 +1859,16 @@ class TrackMapApp:
 
         FRAME_DT = 1.0 / 30.0
         INTERP_DELAY = 2 * FRAME_DT  # ~67ms
-        # Use simulation time (sessionTime) for stable interpolation
+        # Advance sessionTime smoothly between packets using wall clock delta
         sim_now = getattr(self, '_last_sim_time', 0)
-        if sim_now > 0:
-            render_now = sim_now - INTERP_DELAY
+        wall_at_last_packet = getattr(self, '_last_packet_time', 0)
+        if sim_now > 0 and wall_at_last_packet > 0:
+            wall_elapsed = time.time() - wall_at_last_packet
+            # Clamp to prevent runaway if no packets for a while
+            wall_elapsed = max(0.0, min(wall_elapsed, 0.2))
+            render_now = sim_now + wall_elapsed - INTERP_DELAY
         else:
             render_now = time.time() - INTERP_DELAY
-            if self._last_packet_time > 0:
-                render_now = max(render_now, self._last_packet_time - 0.5)
         data = self.last_data or {}
         player = data.get('player', {})
         all_cars = data.get('allCars', [])
