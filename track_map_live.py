@@ -799,11 +799,12 @@ class TrackMapApp:
     STATS_W = 300
     STATS_SEP_COLOR = '#444466'
 
-    def __init__(self, track_map, reader=None, replay_mode=False, debug=False):
+    def __init__(self, track_map, reader=None, replay_mode=False, debug=False, raw_mode=False):
         self.track_map = track_map
         self.reader = reader if reader else TelemetryReader()
         self.replay_mode = replay_mode
         self.debug = debug
+        self.raw_mode = raw_mode
         self.debug_frame_count = 0
         self.follow_player = False
         # Collision/state tracking for Feature 2
@@ -1777,6 +1778,11 @@ class TrackMapApp:
             _in_render_loop = False
 
     def _render_cars_impl(self):
+        # ── Raw mode: bypass ALL interpolation, render world pos directly ──
+        if self.raw_mode:
+            self._render_cars_raw()
+            return
+
         if not self._interp_curr:
             return
 
@@ -1880,6 +1886,69 @@ class TrackMapApp:
                     self.canvas.itemconfig(
                         self.other_car_markers[i],
                         fill=self.OTHER_CAR_COLOR, outline='#66bbff')
+            else:
+                self.canvas.coords(
+                    self.other_car_markers[i], -20, -20, -20, -20)
+                self.canvas.coords(self.other_car_labels[i], -20, -20)
+                self.canvas.itemconfig(self.other_car_labels[i], text='')
+
+    def _render_cars_raw(self):
+        """Raw mode: render cars directly from world positions. No interpolation."""
+        data = self.last_data
+        if not data:
+            return
+
+        player = data.get('player', {})
+        all_cars = data.get('allCars', [])
+
+        ppm = self.transform.base_scale * self.transform.zoom
+        car_r = max(3, min(8, int(round(2.0 * ppm / 2))))
+        other_r = max(2, min(6, int(round(1.8 * ppm / 2))))
+
+        # Player: render from world pos directly
+        wp = player.get('world_pos_m')
+        if wp:
+            projected = project_world_to_2d(self.track_map, wp)
+            if projected:
+                pu, pv = projected
+                cx, cy = self.transform.to_canvas(pu, pv)
+                r = car_r
+                self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
+                self.canvas.itemconfig(self.car_marker, fill='white')
+
+                if self.follow_player:
+                    self.transform.center_on(pu, pv)
+                    self.needs_redraw = True
+
+        # Other cars: render from world pos directly
+        render_cars = []
+        for car in all_cars:
+            ci = car.get('carIndex', -1)
+            if ci < 0:
+                continue
+            cwp = car.get('world_pos_m')
+            if not cwp:
+                continue
+            proj = project_world_to_2d(self.track_map, cwp)
+            if proj:
+                render_cars.append((ci, proj, car.get('position', 0)))
+
+        for i in range(self.MAX_OTHER_CARS):
+            if i < len(render_cars):
+                ci, (cu, cv), pos = render_cars[i]
+                ccx, ccy = self.transform.to_canvas(cu, cv)
+                r = other_r
+                self.canvas.coords(
+                    self.other_car_markers[i],
+                    ccx - r, ccy - r, ccx + r, ccy + r)
+                self.canvas.coords(
+                    self.other_car_labels[i], ccx, ccy - r - 2)
+                self.canvas.itemconfig(
+                    self.other_car_labels[i],
+                    text=f'P{pos}' if pos else '')
+                self.canvas.itemconfig(
+                    self.other_car_markers[i],
+                    fill='#4488ff', outline='#66bbff')
             else:
                 self.canvas.coords(
                     self.other_car_markers[i], -20, -20, -20, -20)
@@ -2038,6 +2107,7 @@ def get_track_name_safe(track_id):
 def main():
     preview = '--preview' in sys.argv
     debug = '--debug' in sys.argv
+    raw_mode = '--raw' in sys.argv
     replay_file = None
 
     # Parse --replay <file>
@@ -2051,7 +2121,7 @@ def main():
             print("ERROR: --replay requires a JSONL file path")
             sys.exit(1)
 
-    args = [a for a in raw_args if a not in ('--preview', '--debug')]
+    args = [a for a in raw_args if a not in ('--preview', '--debug', '--raw')]
 
     if not args:
         print("Usage: python3 track_map_live.py <track_map.json> [options]")
@@ -2060,6 +2130,7 @@ def main():
         print("  --preview              Show track map only (no live data)")
         print("  --replay <file.jsonl>  Replay a recorded telemetry file")
         print("  --debug                Print lateral offsets per car to stderr")
+        print("  --raw                  Bypass interpolation, render world pos directly")
         print()
         print("Controls:")
         print("  Scroll wheel    Zoom in/out (toward cursor)")
@@ -2099,17 +2170,17 @@ def main():
         dur = format_time(reader.total_duration_s())
         print(f"Replay: {reader.frame_count()} frames, {dur} duration")
         print("Controls: Space=Play/Pause | Left/Right=Skip | 1-4=Speed | Scroll=Zoom | Drag=Pan")
-        app = TrackMapApp(track_map, reader=reader, replay_mode=True, debug=debug)
+        app = TrackMapApp(track_map, reader=reader, replay_mode=True, debug=debug, raw_mode=raw_mode)
         app.run()
     elif preview:
         print("Opening preview... (close window to exit)")
         print("Controls: Scroll=Zoom | Drag=Pan | R=Reset | +/-=Zoom")
-        app = TrackMapApp(track_map, debug=debug)
+        app = TrackMapApp(track_map, debug=debug, raw_mode=raw_mode)
         app.run(preview_only=True)
     else:
         print("Starting GUI... (close window or Ctrl+C to stop)")
         print("Controls: Scroll=Zoom | Drag=Pan | R=Reset | F=Follow | +/-=Zoom")
-        app = TrackMapApp(track_map, debug=debug)
+        app = TrackMapApp(track_map, debug=debug, raw_mode=raw_mode)
         app.run()
 
 
