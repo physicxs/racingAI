@@ -289,11 +289,12 @@ _ST_RECOVERING = 3  # global reset
 
 
 class CarProjectionState:
-    """Per-car projection tracking with state machine."""
+    """Per-car (s, d) tracking state."""
     __slots__ = ('phase', 'prev_seg_idx', 'prev_u', 'prev_v',
                  'prev_world_u', 'prev_world_v', 'invalid_count',
                  'prev_lateral', 'off_track_count',
-                 'vel_u', 'vel_v', 'last_seen')
+                 'vel_u', 'vel_v', 'last_seen',
+                 'initialized', 's', 'd')
 
     def __init__(self):
         self.phase = _ST_INIT
@@ -307,13 +308,17 @@ class CarProjectionState:
         self.off_track_count = 0
         self.vel_u = 0.0
         self.vel_v = 0.0
-        self.last_seen = 0.0  # timestamp of last update
+        self.last_seen = 0.0
+        self.initialized = False
+        self.s = 0.0
+        self.d = 0.0
 
     def invalidate(self):
         """Force reinitialization."""
         self.phase = _ST_INIT
         self.prev_seg_idx = None
         self.invalid_count = 0
+        self.initialized = False
 
 
 # Per-car state: keyed by car identifier ('player' or car index)
@@ -410,27 +415,46 @@ RELAXED_DIST_SQ = 15.0 * 15.0  # 15m — UNSTABLE
 _in_render_loop = False  # runtime guard: projection must not be called during render
 
 
+def _lookup_tangent(track_map, s):
+    """Look up interpolated tangent vector (tu, tv) at arc-length s."""
+    n = track_map['num_points']
+    us = track_map['us']
+    vs = track_map['vs']
+    track_len = track_map['track_length']
+
+    s = s % track_len
+    if s < 0:
+        s += track_len
+
+    i = int(s) % n
+    i_next = (i + 1) % n
+    tu = us[i_next] - us[i]
+    tv = vs[i_next] - vs[i]
+    tlen = math.sqrt(tu * tu + tv * tv)
+    if tlen > 1e-9:
+        tu /= tlen
+        tv /= tlen
+    return tu, tv
+
+
 def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
                            speed_kmh=0, dt=1/30, player_seg_idx=None):
-    """Compute car's 2D position using state-machine projection.
+    """Compute car's track position using persistent (s, d) tracking.
 
-    States: INIT → TRACKING ↔ UNSTABLE → RECOVERING → TRACKING
-    Never freezes: escalates automatically when stuck.
+    Projection is ONLY used for initialization. All runtime updates
+    advance s via world-space motion projected onto track tangent.
 
     Returns (u, v, lateral_offset, is_off_track).
     """
     if _in_render_loop:
         raise RuntimeError("Projection called during render loop — architecture violation")
-    state = _get_car_state(car_id)
 
-    # Fallback: if world→2D fails, hold position briefly then escalate
+    state = _get_car_state(car_id)
     projected = project_world_to_2d(track_map, world_pos)
+
     if projected is None:
-        state.invalid_count += 1
-        if state.invalid_count > 5:
-            state.phase = _ST_RECOVERING
         if state.prev_u is not None:
-            return state.prev_u, state.prev_v, 0.0, False
+            return state.prev_u, state.prev_v, state.prev_lateral, False
         cu, cv = lookup_position(track_map, lap_distance)
         return cu, cv, 0.0, False
 
@@ -440,211 +464,99 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     n = track_map['num_points']
     track_len = track_map['track_length']
 
-    # Compute velocity direction for direction-aware projection
-    vu, vv = state.vel_u, state.vel_v
-    if state.prev_world_u is not None:
-        du = car_u - state.prev_world_u
-        dv = car_v - state.prev_world_v
-        vlen = math.sqrt(du * du + dv * dv)
-        if vlen > 0.1:
-            vu = du / vlen
-            vv = dv / vlen
-            state.vel_u = vu
-            state.vel_v = vv
-
     if n < 2:
-        if state.prev_u is not None:
-            return state.prev_u, state.prev_v, 0.0, False
-        cu, cv = lookup_position(track_map, lap_distance)
-        return cu, cv, 0.0, False
+        return car_u, car_v, 0.0, False
 
-    accepted = False
+    # ── Initialize: one-time full projection ──
+    needs_init = not state.initialized
+    if state.initialized and state.prev_world_u is not None:
+        # Check for world position spike
+        dx = car_u - state.prev_world_u
+        ddv = car_v - state.prev_world_v
+        jump_sq = dx * dx + ddv * ddv
+        if jump_sq > 2500:  # > 50m — spike or teleport, skip this frame
+            # Count consecutive large jumps — only re-init after 5 in a row
+            state.invalid_count += 1
+            if state.invalid_count > 5:
+                needs_init = True
+                state.invalid_count = 0
+            else:
+                return state.prev_u, state.prev_v, state.prev_lateral, False
+        else:
+            state.invalid_count = 0
 
-    # ── INIT: global search on first frame ──
-    if state.phase == _ST_INIT:
+    if needs_init:
         if car_id == 'player':
-            best_seg_idx, best_proj_u, best_proj_v, best_dist_sq, best_t = \
+            seg_idx, proj_u, proj_v, _, t = \
                 _find_best_segment(car_u, car_v, us, vs, n, 0, n - 1)
         elif player_seg_idx is not None:
-            best_seg_idx, best_proj_u, best_proj_v, best_dist_sq, best_t = \
-                _find_best_segment(car_u, car_v, us, vs, n, player_seg_idx, 20)
+            seg_idx, proj_u, proj_v, _, t = \
+                _find_best_segment(car_u, car_v, us, vs, n, player_seg_idx, 30)
         else:
             center = int(lap_distance % track_len) % n
-            best_seg_idx, best_proj_u, best_proj_v, best_dist_sq, best_t = \
+            seg_idx, proj_u, proj_v, _, t = \
                 _find_best_segment(car_u, car_v, us, vs, n, center, 50)
 
-        state.prev_seg_idx = best_seg_idx
+        # Compute s from segment index + t parameter
+        state.s = float(seg_idx) + t
+
+        # Compute d from normal
+        nu, nv = lookup_normal(track_map, state.s)
+        du = car_u - proj_u
+        ddv = car_v - proj_v
+        state.d = du * nu + ddv * nv
+
         state.prev_world_u = car_u
         state.prev_world_v = car_v
-        state.phase = _ST_TRACKING
-        state.invalid_count = 0
-        accepted = True
+        state.prev_seg_idx = seg_idx
+        state.initialized = True
 
-    # ── RECOVERING: global reset ──
-    elif state.phase == _ST_RECOVERING:
-        best_seg_idx, best_proj_u, best_proj_v, best_dist_sq, best_t = \
-            _find_best_segment(car_u, car_v, us, vs, n, 0, n - 1)
-        state.prev_seg_idx = best_seg_idx
-        state.prev_world_u = car_u
-        state.prev_world_v = car_v
-        state.phase = _ST_TRACKING
-        state.invalid_count = 0
-        accepted = True
-
-    # ── TRACKING: strict ±5 ──
-    elif state.phase == _ST_TRACKING:
-        center_idx = state.prev_seg_idx
-
-        # Nearby cars close to player: use player segment
-        if player_seg_idx is not None and car_id != 'player':
-            ps = _get_car_state('player')
-            if ps.prev_world_u is not None:
-                dx = car_u - ps.prev_world_u
-                dy = car_v - ps.prev_world_v
-                if dx * dx + dy * dy < 400:
-                    center_idx = player_seg_idx
-
-        best_seg_idx, best_proj_u, best_proj_v, best_dist_sq, best_t = \
-            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 10,
-                               prev_idx=state.prev_seg_idx, vel_u=vu, vel_v=vv)
-
-        if best_dist_sq < STRICT_DIST_SQ:
-            # Velocity check (player 1.5x, others 2x)
-            vel_ok = True
-            if state.prev_world_u is not None and speed_kmh > 0:
-                mdx = car_u - state.prev_world_u
-                mdy = car_v - state.prev_world_v
-                actual = math.sqrt(mdx * mdx + mdy * mdy)
-                factor = 1.5 if car_id == 'player' else 2.0
-                expected = (speed_kmh / 3.6) * dt * factor
-                if actual > max(expected, 5):
-                    vel_ok = False
-
-            if vel_ok:
-                accepted = True
-                state.invalid_count = 0
-            else:
-                state.invalid_count += 1
-        else:
-            state.invalid_count += 1
-
-        if not accepted and state.invalid_count > 3:
-            state.phase = _ST_UNSTABLE
-
-    # ── UNSTABLE: relaxed ±15 ──
-    elif state.phase == _ST_UNSTABLE:
-        center_idx = state.prev_seg_idx
-
-        best_seg_idx, best_proj_u, best_proj_v, best_dist_sq, best_t = \
-            _find_best_segment(car_u, car_v, us, vs, n, center_idx, 30,
-                               prev_idx=state.prev_seg_idx, vel_u=vu, vel_v=vv)
-
-        if best_dist_sq < RELAXED_DIST_SQ:
-            # Relaxed velocity: 3x
-            vel_ok = True
-            if state.prev_world_u is not None and speed_kmh > 0:
-                mdx = car_u - state.prev_world_u
-                mdy = car_v - state.prev_world_v
-                actual = math.sqrt(mdx * mdx + mdy * mdy)
-                expected = (speed_kmh / 3.6) * dt * 3.0
-                if actual > max(expected, 10):
-                    vel_ok = False
-
-            if vel_ok:
-                accepted = True
-                state.invalid_count = 0
-                state.phase = _ST_TRACKING
-            else:
-                state.invalid_count += 1
-        else:
-            state.invalid_count += 1
-
-        if not accepted and state.invalid_count > 6:
-            state.phase = _ST_RECOVERING
-
-    # ── Update state or hold ──
-    if accepted:
-        # Index smoothing: blend with previous to reduce jitter
-        if state.prev_seg_idx is not None:
-            # Handle wrap-around
-            raw_idx = best_seg_idx
-            prev = state.prev_seg_idx
-            delta = raw_idx - prev
-            if delta > n // 2:
-                delta -= n
-            elif delta < -n // 2:
-                delta += n
-            smoothed = prev + int(round(0.3 * delta))
-            best_seg_idx = smoothed % n
-
-        state.prev_seg_idx = best_seg_idx
-        state.prev_world_u = car_u
-        state.prev_world_v = car_v
-
-        # Re-project onto smoothed segment
-        _, best_proj_u, best_proj_v, _, _ = \
-            _find_best_segment(car_u, car_v, us, vs, n, best_seg_idx, 0)
     else:
-        # Dead reckoning: predict forward motion from speed
-        if state.prev_seg_idx is not None and speed_kmh > 0:
-            speed_mps = speed_kmh / 3.6
-            estimated_delta = speed_mps * dt
-            estimated_delta = min(estimated_delta, 3.0)  # clamp to 3m max
-            idx_advance = max(1, int(round(estimated_delta)))
-            best_seg_idx = (state.prev_seg_idx + idx_advance) % n
-            state.prev_seg_idx = best_seg_idx
-        else:
-            best_seg_idx = state.prev_seg_idx
+        # ── Per-frame update: advance s via motion, recompute d ──
 
-        # Consecutive fallback limit: force recovery after 3
-        if state.invalid_count > 3 and state.phase == _ST_TRACKING:
-            state.phase = _ST_UNSTABLE
+        # 1) World-space motion delta
+        dx = car_u - state.prev_world_u
+        dy = car_v - state.prev_world_v
 
-        _, best_proj_u, best_proj_v, _, _ = \
-            _find_best_segment(car_u, car_v, us, vs, n, best_seg_idx, 0)
+        # 2) Get track tangent at current s
+        tu, tv = _lookup_tangent(track_map, state.s)
 
-    # ── Compute lateral offset using interpolated spline normals ──
-    i = best_seg_idx
-    i_next = (i + 1) % n
-    nus = track_map['normals_u']
-    nvs = track_map['normals_v']
+        # 3) Project motion onto tangent → ds
+        ds = dx * tu + dy * tv
 
-    # Interpolate normal along segment using t parameter
-    t_param = best_t if 'best_t' in dir() else 0.5
-    n0u, n0v = nus[i], nvs[i]
-    n1u, n1v = nus[i_next], nvs[i_next]
-    ni_u = (1 - t_param) * n0u + t_param * n1u
-    ni_v = (1 - t_param) * n0v + t_param * n1v
-    ni_len = math.sqrt(ni_u * ni_u + ni_v * ni_v)
-    if ni_len < 1e-9:
-        if state.prev_u is not None:
-            return state.prev_u, state.prev_v, 0.0, False
-        cu, cv = lookup_position(track_map, lap_distance)
-        return cu, cv, 0.0, False
-    ni_u /= ni_len
-    ni_v /= ni_len
+        # 4) Advance s
+        state.s += ds
+        state.s = state.s % track_len
+        if state.s < 0:
+            state.s += track_len
 
-    du = car_u - best_proj_u
-    dv = car_v - best_proj_v
-    lateral_offset = du * ni_u + dv * ni_v
+        # 5) Recompute d from normal at new s
+        cu, cv = lookup_position(track_map, state.s)
+        nu, nv = lookup_normal(track_map, state.s)
+        du = car_u - cu
+        ddv = car_v - cv
+        state.d = du * nu + ddv * nv
 
-    if not accepted:
-        # Dead reckoning: preserve previous lateral offset
-        lateral_offset = state.prev_lateral
+        state.prev_world_u = car_u
+        state.prev_world_v = car_v
+        state.prev_seg_idx = int(state.s) % n
 
-    hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
+    # ── Re-projection safeguard ──
+    hw = track_map['half_widths'][int(state.s) % n] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
+    if abs(state.d) > hw * 1.5:
+        # Re-init if clearly off track
+        state.initialized = False
+        # Still render at clamped position this frame
+        state.d = max(-hw, min(hw, state.d))
 
-    # Hard offset clamp: reject extreme outliers
-    if abs(lateral_offset) > hw * 2:
-        if state.prev_u is not None:
-            return state.prev_u, state.prev_v, state.prev_lateral, state.off_track_count >= 5
-        return best_proj_u, best_proj_v, 0.0, False
-
+    # ── Compute final position from (s, d) ──
+    cu, cv = lookup_position(track_map, state.s)
+    nu, nv = lookup_normal(track_map, state.s)
+    lateral_offset = state.d
     state.prev_lateral = lateral_offset
 
+    # Off-track detection
     TRACK_MARGIN = 1.5
-
-    # Off-track: temporal filter — must persist for 5 frames
     candidate_off = abs(lateral_offset) > (hw + TRACK_MARGIN)
     if candidate_off:
         state.off_track_count += 1
@@ -652,9 +564,8 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
         state.off_track_count = 0
     is_off_track = state.off_track_count >= 5
 
-    # Final position: projection + interpolated normal * offset
-    pos_u = best_proj_u + ni_u * lateral_offset
-    pos_v = best_proj_v + ni_v * lateral_offset
+    pos_u = cu + nu * lateral_offset
+    pos_v = cv + nv * lateral_offset
 
     state.prev_u = pos_u
     state.prev_v = pos_v
