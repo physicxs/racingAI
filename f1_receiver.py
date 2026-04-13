@@ -176,6 +176,29 @@ class CarState:
 
 # ─── Session State ────────────────────────────────────────────────────────────
 
+class FrameBuffer:
+    """Buffers packets by frameIdentifier to prevent cross-frame mixing."""
+    __slots__ = ['frame_id', 'packets', 'has_motion', 'has_lap']
+
+    def __init__(self, frame_id):
+        self.frame_id = frame_id
+        self.packets = []  # list of (data, header) tuples
+        self.has_motion = False
+        self.has_lap = False
+
+    def add(self, data, header):
+        pid = header['packet_id']
+        self.packets.append((data, header))
+        if pid == PID_MOTION:
+            self.has_motion = True
+        elif pid == PID_LAP_DATA:
+            self.has_lap = True
+
+    def is_ready(self):
+        """Frame is ready when it has at least motion + lap data."""
+        return self.has_motion and self.has_lap
+
+
 class SessionState:
     def __init__(self):
         self.cars = [CarState(i) for i in range(MAX_CARS)]
@@ -191,6 +214,10 @@ class SessionState:
         self.air_temperature = 0
         self.total_laps = 0
         self.lock = threading.Lock()
+        # Frame synchronization
+        self._frame_buffers = {}  # frameId → FrameBuffer
+        self._last_committed_frame = -1
+        self._max_buffered_frames = 10
 
 
 # ─── Packet Decoder ───────────────────────────────────────────────────────────
@@ -414,16 +441,80 @@ DECODERS = {
 
 
 def process_packet(data, state):
-    """Decode a raw UDP packet and update state."""
+    """Buffer packets by frameIdentifier, commit only complete frames."""
     header = decode_header(data)
     if header is None:
         return
     if header['packet_format'] != 2025:
         return
     pid = header['packet_id']
-    decoder = DECODERS.get(pid)
-    if decoder:
+    if pid not in DECODERS:
+        return
+
+    frame_id = header['frame_identifier']
+
+    # Session packets are always applied immediately (no per-car data)
+    if pid == PID_SESSION:
+        decode_session(data, state, header)
+        return
+
+    with state.lock:
+        # If this packet belongs to an already-committed frame, apply directly
+        # (handles telemetry/status/damage arriving slightly late)
+        if frame_id == state._last_committed_frame:
+            state.lock.release()
+            try:
+                DECODERS[pid](data, state, header)
+            finally:
+                state.lock.acquire()
+            return
+
+        # Discard packets from frames older than last committed
+        if frame_id < state._last_committed_frame:
+            return
+
+        # Add to frame buffer
+        if frame_id not in state._frame_buffers:
+            state._frame_buffers[frame_id] = FrameBuffer(frame_id)
+
+        buf = state._frame_buffers[frame_id]
+        buf.add(data, header)
+
+        # Check if this frame is ready to commit
+        if buf.is_ready() and frame_id > state._last_committed_frame:
+            _commit_frame(state, buf)
+            state._last_committed_frame = frame_id
+
+            # Cleanup old buffers
+            stale = [fid for fid in state._frame_buffers if fid <= frame_id]
+            for fid in stale:
+                del state._frame_buffers[fid]
+
+            # Also cleanup any buffers that are too old
+            if state._frame_buffers:
+                oldest_allowed = frame_id - state._max_buffered_frames
+                stale = [fid for fid in state._frame_buffers if fid < oldest_allowed]
+                for fid in stale:
+                    del state._frame_buffers[fid]
+
+
+def _commit_frame(state, frame_buf):
+    """Apply all packets from a complete frame to state. Must be called inside lock."""
+    for data, header in frame_buf.packets:
+        pid = header['packet_id']
+        decoder = DECODERS.get(pid)
+        if decoder and pid != PID_SESSION:
+            # Call decoder without lock (we're already inside lock)
+            _decode_no_lock(decoder, data, state, header)
+
+
+def _decode_no_lock(decoder, data, state, header):
+    """Call decoder but release/reacquire lock since decoders acquire it."""
+    state.lock.release()
+    try:
         decoder(data, state, header)
+    finally:
+        state.lock.acquire()
 
 
 # ─── Nearby Cars Selection ────────────────────────────────────────────────────
