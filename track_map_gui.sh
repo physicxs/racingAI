@@ -31,8 +31,7 @@ if [ ! -f "$MAP_FILE" ]; then
 fi
 
 # Kill any existing receiver holding port 20777
-pkill -9 -f "f1telemetry.F1TelemetryApp" 2>/dev/null
-# Also kill by port in case pkill missed it
+pkill -9 -f "f1_receiver.py" 2>/dev/null
 lsof -t -i :20777 2>/dev/null | xargs kill -9 2>/dev/null
 sleep 1
 
@@ -60,4 +59,4 @@ echo "Close the GUI window or press Ctrl+C to stop."
 echo ""
 
 EXTRA_ARGS="${@:2}"
-mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" | tee "$RECORD_FILE" | python3 -u track_map_live.py "$MAP_FILE" $EXTRA_ARGS
+python3 -u f1_receiver.py | tee "$RECORD_FILE" | python3 -u track_map_live.py "$MAP_FILE" $EXTRA_ARGS

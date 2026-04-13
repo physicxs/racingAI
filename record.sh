@@ -5,7 +5,7 @@
 cd "$(dirname "$0")"
 
 # Kill any existing receiver
-pkill -f "f1telemetry.F1TelemetryApp" 2>/dev/null
+pkill -f "f1_receiver.py" 2>/dev/null
 sleep 1
 
 echo "╔════════════════════════════════════════════════════════════════════════════════╗"
@@ -24,4 +24,4 @@ echo "Starting in 2 seconds..."
 sleep 2
 echo ""
 
-mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" 2>&1 | python3 record_telemetry.py
+python3 -u f1_receiver.py 2>&1 | python3 record_telemetry.py

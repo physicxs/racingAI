@@ -5,7 +5,7 @@
 cd "$(dirname "$0")"
 
 # Kill any existing processes
-pkill -f "f1telemetry.F1TelemetryApp" 2>/dev/null
+pkill -f "f1_receiver.py" 2>/dev/null
 pkill -f "UDPPacketSender" 2>/dev/null
 sleep 1
 
@@ -24,7 +24,7 @@ SENDER_PID=$!
 sleep 2
 
 # Record for 60 seconds using a timeout
-timeout 60 bash -c "mvn -q exec:java -Dexec.mainClass=\"com.racingai.f1telemetry.F1TelemetryApp\" 2>&1 | python3 -c \"
+timeout 60 bash -c "python3 -u f1_receiver.py 2>&1 | python3 -c \"
 import sys
 count = 0
 with open('$JSONL_FILE', 'w') as f:
@@ -38,7 +38,7 @@ with open('$JSONL_FILE', 'w') as f:
 
 # Clean up
 kill $SENDER_PID 2>/dev/null
-pkill -f "f1telemetry.F1TelemetryApp" 2>/dev/null
+pkill -f "f1_receiver.py" 2>/dev/null
 pkill -f "UDPPacketSender" 2>/dev/null
 
 echo ""

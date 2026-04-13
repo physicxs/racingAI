@@ -54,7 +54,7 @@ This outputs `Track Map Builds/track_0_coaching_report.json` with per-corner coa
 ### Step 6: Use the track map
 Watch live with the GUI (also auto-records telemetry for replay):
 ```bash
-./track_map_gui.sh "Track Map Builds/track_0_true_map.json"
+/track_map_gui.sh "Track Map Builds/track_0_true_map.json"
 ```
 
 Or replay a previous session:
@@ -71,7 +71,7 @@ Real-time terminal dashboard showing position, inputs, tyre wear, and nearby car
 ```
 
 ### Input Monitor
-Minimal monitor showing only steering, throttle, brake, gear, and speed.
+Minimal monitor showing only steering, throttle, brake,. gear, and speed.
 ```bash
 ./test_inputs.sh
 ```
@@ -128,24 +128,18 @@ These scripts use a built-in UDP packet simulator.
 ./track_map_gui_test.sh    # Test track map GUI
 ```
 
-## Building and Running Manually
+## Running Manually
 
 ```bash
-# Compile
-mvn clean compile
-
-# Run tests
-mvn test
-
-# Run the telemetry receiver directly (outputs JSONL to stdout)
-mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp"
+# Run the Python telemetry receiver directly (outputs JSONL to stdout)
+python3 -u f1_receiver.py
 
 # Pipe to any Python tool
-mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" 2>&1 | python3 live_monitor.py
-mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" 2>&1 | python3 record_telemetry.py
-mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.F1TelemetryApp" | python3 -u track_map_live.py "Track Map Builds/track_0_true_map.json"
+python3 -u f1_receiver.py 2>&1 | python3 live_monitor.py
+python3 -u f1_receiver.py 2>&1 | python3 record_telemetry.py
+python3 -u f1_receiver.py | tee telemetry/recording.jsonl | python3 -u track_map_live.py "Track Map Builds/track_0_true_map.json"
 
-# Run the UDP packet simulator (for testing without the game)
+# Run the UDP packet simulator (for testing without the game — requires Java/Maven)
 mvn -q exec:java -Dexec.mainClass="com.racingai.f1telemetry.UDPPacketSender"
 ```
 
