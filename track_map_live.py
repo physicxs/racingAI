@@ -1757,6 +1757,18 @@ class TrackMapApp:
             car_dist = car.get('lapDistance', 0.0)
             car_world_pos = car.get('world_pos_m')
             car_speed = car.get('speed', 0)
+
+            # Spike filter: reject single-frame world position jumps > 100m
+            prev_wp_key = f'_wp_{cid}'
+            prev_wp = getattr(self, prev_wp_key, None)
+            if car_world_pos and prev_wp:
+                dx = car_world_pos['x'] - prev_wp[0]
+                dz = car_world_pos['z'] - prev_wp[1]
+                if dx * dx + dz * dz > 10000:  # 100m squared
+                    continue  # skip this car's update for this frame
+            if car_world_pos:
+                setattr(self, prev_wp_key, (car_world_pos['x'], car_world_pos['z']))
+
             cu, cv, car_lat, car_off = compute_track_position(
                 self.track_map, car_world_pos, car_dist,
                 car_id=cid, speed_kmh=car_speed,
