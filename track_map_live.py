@@ -1607,21 +1607,33 @@ class TrackMapApp:
             self.reader.set_speed(speed)
 
     def _interp_pos(self, car_id, now):
-        """Interpolate seg_idx and offset, reconstruct from track normals.
+        """Interpolate seg_idx and offset per car, reconstruct from track normals.
         Returns (u, v) or None if no data available."""
         curr = self._interp_curr.get(car_id)
         if curr is None:
             return None
 
-        c_idx, c_off, t1, _ = curr
-        prev = self._interp_prev.get(car_id)
         n = self.track_map['num_points']
+
+        # Unpack: (seg_idx, offset, sim_time, raw_off, frame_id)
+        if len(curr) >= 5:
+            c_idx, c_off, t1, _, c_fid = curr
+        else:
+            c_idx, c_off, t1, _ = curr
+            c_fid = 0
+
+        prev = self._interp_prev.get(car_id)
 
         if prev is None:
             s_render = float(c_idx)
             offset = c_off
         else:
-            p_idx, p_off, t0, _ = prev
+            if len(prev) >= 5:
+                p_idx, p_off, t0, _, p_fid = prev
+            else:
+                p_idx, p_off, t0, _ = prev
+                p_fid = 0
+
             dt = t1 - t0
 
             # Compute index delta (wrap-safe)
@@ -1631,8 +1643,11 @@ class TrackMapApp:
             elif delta < -n // 2:
                 delta += n
 
-            # Large time gap or large index jump: snap, don't interpolate
-            if dt > 0.1 or dt < 0.001 or abs(delta) > n // 4:
+            # Per-car frame gap: if more than 3 frames skipped, snap
+            frame_gap = c_fid - p_fid if c_fid > 0 and p_fid > 0 else 1
+
+            # Large time gap, large index jump, or large frame gap: snap
+            if dt > 0.1 or dt < 0.001 or abs(delta) > n // 4 or frame_gap > 3:
                 s_render = float(c_idx)
                 offset = c_off
             else:
@@ -1707,12 +1722,13 @@ class TrackMapApp:
         now = time.time()
         # Use sessionTime as simulation clock (stable, game-driven)
         sim_time = session_time if session_time > 0 else now
+        frame_id = data.get('frameId', 0)
         ps = _get_car_state('player')
         ps.last_seen = now
         new_s = ps.prev_seg_idx or 0
         if 'player' in self._interp_curr:
             self._interp_prev['player'] = self._interp_curr['player']
-        self._interp_curr['player'] = (new_s, player_lat, sim_time, p_off)
+        self._interp_curr['player'] = (new_s, player_lat, sim_time, p_off, frame_id)
         self._last_packet_time = now
         self._last_sim_time = sim_time
 
@@ -1743,7 +1759,7 @@ class TrackMapApp:
             new_s = cs.prev_seg_idx or 0
             if cid in self._interp_curr:
                 self._interp_prev[cid] = self._interp_curr[cid]
-            self._interp_curr[cid] = (new_s, car_lat, sim_time, car_off)
+            self._interp_curr[cid] = (new_s, car_lat, sim_time, car_off, frame_id)
 
         # Cleanup stale cars (not seen for >3 seconds)
         STALE_TIMEOUT = 3.0
@@ -1844,7 +1860,7 @@ class TrackMapApp:
             r = car_r
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
 
-            _, _, _, p_off = self._interp_curr['player']
+            p_off = self._interp_curr['player'][3]
             if self.collision_frames > 0:
                 self.collision_frames -= 1
                 self.canvas.itemconfig(self.car_marker,
@@ -1894,7 +1910,7 @@ class TrackMapApp:
                 if result is None:
                     continue
                 cu, cv = result
-                _, _, _, car_off = self._interp_curr[cid]
+                car_off = self._interp_curr[cid][3]
                 ccx, ccy = self.transform.to_canvas(cu, cv)
                 r = other_r
                 self.canvas.coords(
