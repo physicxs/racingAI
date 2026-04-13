@@ -1769,6 +1769,24 @@ class TrackMapApp:
                 self._interp_prev[cid] = self._interp_curr[cid]
             self._interp_curr[cid] = (new_s, car_lat, sim_time, car_off, frame_id)
 
+        # Track which cars were in this frame
+        cars_in_frame = set()
+        cars_in_frame.add('player')
+        for car in all_cars:
+            ci = car.get('carIndex', -1)
+            if ci >= 0:
+                cars_in_frame.add(f'ci_{ci}')
+
+        # For cars NOT in this frame but still active: carry forward with updated time
+        # This prevents freezing — they hold position at current sim_time
+        for cid in list(self._interp_curr.keys()):
+            if cid not in cars_in_frame:
+                curr = self._interp_curr[cid]
+                if len(curr) >= 5:
+                    # Update sim_time to current so interpolation stays smooth
+                    self._interp_prev[cid] = curr
+                    self._interp_curr[cid] = (curr[0], curr[1], sim_time, curr[3], frame_id)
+
         # Cleanup stale cars (not seen for >3 seconds)
         STALE_TIMEOUT = 3.0
         stale_ids = [cid for cid, st in _car_states.items()
