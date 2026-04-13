@@ -1699,7 +1699,15 @@ class TrackMapApp:
 
     def _process_telemetry(self, data):
         """Process new telemetry: compute projections and update interp state.
-        Called ONLY when new data arrives (~30 Hz). NO rendering here."""
+        Called ONLY when new data arrives (~30 Hz). NO rendering here.
+        Enforces strict frame ordering — each frame processed once, in order."""
+        # Strict frame ordering: skip duplicate/out-of-order frames
+        frame_id = data.get('frameId', 0)
+        last_fid = getattr(self, '_last_processed_frame_id', -1)
+        if frame_id > 0 and frame_id <= last_fid:
+            return  # duplicate or out-of-order — skip
+        self._last_processed_frame_id = frame_id
+
         player = data.get('player', {})
         speed = player.get('speed', 0)
         lap_dist = player.get('lapDistance', 0.0)
