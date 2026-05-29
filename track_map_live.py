@@ -682,9 +682,12 @@ class ReplayReader:
         self.data_start = self.frames[self.frame_index].get('timestamp', 0)
 
     def get_latest(self):
-        """Return the current frame based on playback timing."""
+        """Return the current frame based on playback timing.
+        Returns None if frame hasn't changed since last call."""
         if not self.frames:
             return None
+
+        prev_index = self.frame_index
 
         if self.playing:
             elapsed_wall = time.time() - self.wall_start
@@ -700,6 +703,10 @@ class ReplayReader:
             if self.frame_index >= len(self.frames) - 1:
                 self.playing = False
 
+        # Only return frame if it changed (prevents re-processing same frame)
+        if self.frame_index == prev_index and hasattr(self, '_last_returned_index') and self._last_returned_index == self.frame_index:
+            return None
+        self._last_returned_index = self.frame_index
         return self.frames[self.frame_index]
 
     def toggle_play(self):
@@ -710,6 +717,7 @@ class ReplayReader:
             if self.frame_index >= len(self.frames) - 1:
                 self.frame_index = 0
             self.playing = True
+            self._last_returned_index = -1
             self._sync_clock()
 
     def set_speed(self, speed):
@@ -722,6 +730,7 @@ class ReplayReader:
         """Seek to a fraction (0.0–1.0) of the recording."""
         fraction = max(0.0, min(1.0, fraction))
         self.frame_index = int(fraction * (len(self.frames) - 1))
+        self._last_returned_index = -1
         self._sync_clock()
 
     def skip_seconds(self, delta_s):
@@ -740,6 +749,7 @@ class ReplayReader:
                    self.frames[self.frame_index].get('timestamp', 0) > target_ts):
                 self.frame_index -= 1
 
+        self._last_returned_index = -1
         self._sync_clock()
 
     def progress(self):
@@ -1466,6 +1476,7 @@ class TrackMapApp:
             if bar_y <= event.y <= bar_y + self.PROGRESS_BAR_H:
                 fraction = event.x / self.CANVAS_W
                 self.reader.seek(fraction)
+                self._last_processed_frame_id = -1
                 return
         self.drag_start = (event.x, event.y)
 
@@ -1509,10 +1520,12 @@ class TrackMapApp:
     def _on_replay_back(self, event=None):
         if isinstance(self.reader, ReplayReader):
             self.reader.skip_seconds(-5)
+            self._last_processed_frame_id = -1  # reset frame guard for seek
 
     def _on_replay_forward(self, event=None):
         if isinstance(self.reader, ReplayReader):
             self.reader.skip_seconds(5)
+            self._last_processed_frame_id = -1  # reset frame guard for seek
 
     def _on_replay_speed(self, speed):
         if isinstance(self.reader, ReplayReader):
