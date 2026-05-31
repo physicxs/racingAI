@@ -281,181 +281,22 @@ def project_world_to_2d(track_map, world_pos):
     return u, v
 
 
-# Projection state machine phases
-_ST_INIT = 0        # not yet initialized — needs global search
-_ST_TRACKING = 1    # normal: ±5 strict
-_ST_UNSTABLE = 2    # relaxed: ±15, looser thresholds
-_ST_RECOVERING = 3  # global reset
+def compute_track_position(track_map, world_pos, lap_distance):
+    """Compute car's 2D position using segment-based projection.
 
+    Uses proper nearest-segment projection for accurate lateral offset,
+    rather than just using the lapDistance centerline point.
 
-class CarProjectionState:
-    """Per-car (s, d) tracking state."""
-    __slots__ = ('phase', 'prev_seg_idx', 'prev_u', 'prev_v',
-                 'prev_world_u', 'prev_world_v', 'invalid_count',
-                 'prev_lateral', 'off_track_count',
-                 'vel_u', 'vel_v', 'last_seen',
-                 'initialized', 's', 'd')
-
-    def __init__(self):
-        self.phase = _ST_INIT
-        self.prev_seg_idx = None
-        self.prev_u = None
-        self.prev_v = None
-        self.prev_world_u = None
-        self.prev_world_v = None
-        self.invalid_count = 0
-        self.prev_lateral = 0.0
-        self.off_track_count = 0
-        self.vel_u = 0.0
-        self.vel_v = 0.0
-        self.last_seen = 0.0
-        self.initialized = False
-        self.s = 0.0
-        self.d = 0.0
-
-    def invalidate(self):
-        """Force reinitialization."""
-        self.phase = _ST_INIT
-        self.prev_seg_idx = None
-        self.invalid_count = 0
-        self.initialized = False
-
-
-# Per-car state: keyed by car identifier ('player' or car index)
-_car_states = {}
-
-
-def _get_car_state(car_id):
-    if car_id not in _car_states:
-        _car_states[car_id] = CarProjectionState()
-    return _car_states[car_id]
-
-
-CONTINUITY_LAMBDA = 0.3  # soft penalty per index difference
-
-
-def _find_best_segment(car_u, car_v, us, vs, n, center_idx, search_radius,
-                       prev_idx=None, vel_u=0, vel_v=0):
-    """Search for best segment with direction-aware + continuity scoring.
-
-    score = distance + 0.3 * index_penalty + 0.3 * angle_penalty
-    Rejects segments going opposite to car velocity (dot < -0.2).
-
-    Returns (seg_idx, proj_u, proj_v, dist_sq, t_param).
-    """
-    has_vel = (vel_u * vel_u + vel_v * vel_v) > 0.01
-
-    best_score = float('inf')
-    best_dist_sq = float('inf')
-    best_proj_u = us[center_idx]
-    best_proj_v = vs[center_idx]
-    best_seg_idx = center_idx
-    best_t = 0.0
-
-    for offset in range(-search_radius, search_radius + 1):
-        i = (center_idx + offset) % n
-        i_next = (i + 1) % n
-
-        seg_du = us[i_next] - us[i]
-        seg_dv = vs[i_next] - vs[i]
-        seg_len_sq = seg_du * seg_du + seg_dv * seg_dv
-
-        if seg_len_sq < 1e-12:
-            continue
-
-        # Direction filter: reject segments going opposite to velocity
-        if has_vel:
-            seg_len = math.sqrt(seg_len_sq)
-            dot_dir = (seg_du * vel_u + seg_dv * vel_v) / seg_len
-            if dot_dir < -0.2:
-                continue  # opposite direction
-
-        wu = car_u - us[i]
-        wv = car_v - vs[i]
-        t = (wu * seg_du + wv * seg_dv) / seg_len_sq
-        t = max(0.0, min(1.0, t))
-
-        proj_u = us[i] + seg_du * t
-        proj_v = vs[i] + seg_dv * t
-
-        du = car_u - proj_u
-        dv = car_v - proj_v
-        dist_sq = du * du + dv * dv
-
-        # Combined scoring: distance + continuity + direction
-        score = dist_sq
-
-        if prev_idx is not None:
-            idx_delta = abs(i - prev_idx)
-            if idx_delta > n // 2:
-                idx_delta = n - idx_delta
-            score += CONTINUITY_LAMBDA * idx_delta
-
-        if has_vel:
-            seg_len = math.sqrt(seg_len_sq)
-            dot_dir = (seg_du * vel_u + seg_dv * vel_v) / seg_len
-            angle_penalty = 1.0 - max(0.0, dot_dir)
-            score += 0.3 * angle_penalty
-
-        if score < best_score:
-            best_score = score
-            best_dist_sq = dist_sq
-            best_proj_u = proj_u
-            best_proj_v = proj_v
-            best_seg_idx = i
-            best_t = t
-
-    return best_seg_idx, best_proj_u, best_proj_v, best_dist_sq, best_t
-
-
-STRICT_DIST_SQ = 10.0 * 10.0   # 10m — TRACKING
-RELAXED_DIST_SQ = 15.0 * 15.0  # 15m — UNSTABLE
-
-
-_in_render_loop = False  # runtime guard: projection must not be called during render
-
-
-def _lookup_tangent(track_map, s):
-    """Look up interpolated tangent vector (tu, tv) at arc-length s."""
-    n = track_map['num_points']
-    us = track_map['us']
-    vs = track_map['vs']
-    track_len = track_map['track_length']
-
-    s = s % track_len
-    if s < 0:
-        s += track_len
-
-    i = int(s) % n
-    i_next = (i + 1) % n
-    tu = us[i_next] - us[i]
-    tv = vs[i_next] - vs[i]
-    tlen = math.sqrt(tu * tu + tv * tv)
-    if tlen > 1e-9:
-        tu /= tlen
-        tv /= tlen
-    return tu, tv
-
-
-def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
-                           speed_kmh=0, dt=1/30, player_seg_idx=None):
-    """Compute car's track position using persistent (s, d) tracking.
-
-    Projection is ONLY used for initialization. All runtime updates
-    advance s via world-space motion projected onto track tangent.
+    For each nearby centerline segment, projects the car onto it and selects
+    the segment with minimum perpendicular distance. Then computes a local
+    track basis (forward/right) and true lateral offset.
 
     Returns (u, v, lateral_offset, is_off_track).
+    Falls back to centerline position if world_pos is unavailable.
     """
-    if _in_render_loop:
-        raise RuntimeError("Projection called during render loop — architecture violation")
-
-    state = _get_car_state(car_id)
+    cu, cv = lookup_position(track_map, lap_distance)
     projected = project_world_to_2d(track_map, world_pos)
-
     if projected is None:
-        if state.prev_u is not None:
-            return state.prev_u, state.prev_v, state.prev_lateral, False
-        cu, cv = lookup_position(track_map, lap_distance)
         return cu, cv, 0.0, False
 
     car_u, car_v = projected
@@ -465,111 +306,87 @@ def compute_track_position(track_map, world_pos, lap_distance, car_id='player',
     track_len = track_map['track_length']
 
     if n < 2:
-        return car_u, car_v, 0.0, False
+        return cu, cv, 0.0, False
 
-    # ── Initialize: one-time full projection ──
-    needs_init = not state.initialized
-    if state.initialized and state.prev_world_u is not None:
-        # Check for world position spike
-        dx = car_u - state.prev_world_u
-        ddv = car_v - state.prev_world_v
-        jump_sq = dx * dx + ddv * ddv
-        if jump_sq > 2500:  # > 50m — spike or teleport, skip this frame
-            # Count consecutive large jumps — only re-init after 5 in a row
-            state.invalid_count += 1
-            if state.invalid_count > 5:
-                needs_init = True
-                state.invalid_count = 0
-            else:
-                return state.prev_u, state.prev_v, state.prev_lateral, False
-        else:
-            state.invalid_count = 0
+    # Search window around lapDistance for the nearest centerline segment
+    center_idx = int(lap_distance % track_len)
+    if center_idx >= n:
+        center_idx = n - 1
+    search_radius = 50  # ±50 segments (~50m at 1m spacing)
 
-    if needs_init:
-        if car_id == 'player':
-            seg_idx, proj_u, proj_v, _, t = \
-                _find_best_segment(car_u, car_v, us, vs, n, 0, n - 1)
-        elif player_seg_idx is not None:
-            seg_idx, proj_u, proj_v, _, t = \
-                _find_best_segment(car_u, car_v, us, vs, n, player_seg_idx, 30)
-        else:
-            center = int(lap_distance % track_len) % n
-            seg_idx, proj_u, proj_v, _, t = \
-                _find_best_segment(car_u, car_v, us, vs, n, center, 50)
+    best_dist_sq = float('inf')
+    best_proj_u = cu
+    best_proj_v = cv
+    best_seg_idx = center_idx
 
-        # Compute s from segment index + t parameter
-        state.s = float(seg_idx) + t
+    for offset in range(-search_radius, search_radius + 1):
+        i = (center_idx + offset) % n
+        i_next = (i + 1) % n
 
-        # Compute d from normal
-        nu, nv = lookup_normal(track_map, state.s)
+        # Segment vector: v = P[i+1] - P[i]
+        seg_u = us[i_next] - us[i]
+        seg_v = vs[i_next] - vs[i]
+        seg_len_sq = seg_u * seg_u + seg_v * seg_v
+
+        if seg_len_sq < 1e-12:
+            continue
+
+        # Project car onto segment: w = car - P[i], t = dot(w, v) / dot(v, v)
+        wu = car_u - us[i]
+        wv = car_v - vs[i]
+        t = (wu * seg_u + wv * seg_v) / seg_len_sq
+        t = max(0.0, min(1.0, t))
+
+        # Projection point on segment
+        proj_u = us[i] + seg_u * t
+        proj_v = vs[i] + seg_v * t
+
+        # Distance from car to projection
         du = car_u - proj_u
-        ddv = car_v - proj_v
-        state.d = du * nu + ddv * nv
+        dv = car_v - proj_v
+        dist_sq = du * du + dv * dv
 
-        state.prev_world_u = car_u
-        state.prev_world_v = car_v
-        state.prev_seg_idx = seg_idx
-        state.initialized = True
+        if dist_sq < best_dist_sq:
+            best_dist_sq = dist_sq
+            best_proj_u = proj_u
+            best_proj_v = proj_v
+            best_seg_idx = i
 
-    else:
-        # ── Per-frame update: advance s via motion, recompute d ──
+    # Compute local track basis from best segment
+    i = best_seg_idx
+    i_next = (i + 1) % n
+    fwd_u = us[i_next] - us[i]
+    fwd_v = vs[i_next] - vs[i]
+    fwd_len = math.sqrt(fwd_u * fwd_u + fwd_v * fwd_v)
 
-        # 1) World-space motion delta
-        dx = car_u - state.prev_world_u
-        dy = car_v - state.prev_world_v
+    if fwd_len < 1e-9:
+        return cu, cv, 0.0, False
 
-        # 2) Get track tangent at current s
-        tu, tv = _lookup_tangent(track_map, state.s)
+    fwd_u /= fwd_len
+    fwd_v /= fwd_len
 
-        # 3) Project motion onto tangent → ds
-        ds = dx * tu + dy * tv
+    # Right vector = cross(forward, up) in 3D with Y-up, projected to X/Z plane
+    # Equivalent to 90° CW rotation in 2D: right = (-forward.v, forward.u)
+    right_u = -fwd_v
+    right_v = fwd_u
 
-        # 4) Advance s
-        state.s += ds
-        state.s = state.s % track_len
-        if state.s < 0:
-            state.s += track_len
+    # True lateral offset = dot(car - projection, right)
+    du = car_u - best_proj_u
+    dv = car_v - best_proj_v
+    lateral_offset = du * right_u + dv * right_v
 
-        # 5) Recompute d from normal at new s
-        cu, cv = lookup_position(track_map, state.s)
-        nu, nv = lookup_normal(track_map, state.s)
-        du = car_u - cu
-        ddv = car_v - cv
-        state.d = du * nu + ddv * nv
+    # Per-point half_width (from true centerline maps) or global constant
+    hw = track_map['half_widths'][best_seg_idx] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
 
-        state.prev_world_u = car_u
-        state.prev_world_v = car_v
-        state.prev_seg_idx = int(state.s) % n
+    # Clamp to 2x track width for display
+    max_offset = hw * 2.0
+    display_offset = max(-max_offset, min(max_offset, lateral_offset))
 
-    # ── Re-projection safeguard ──
-    hw = track_map['half_widths'][int(state.s) % n] if 'half_widths' in track_map else TRACK_HALF_WIDTH_M
-    if abs(state.d) > hw * 1.5:
-        # Re-init if clearly off track
-        state.initialized = False
-        # Still render at clamped position this frame
-        state.d = max(-hw, min(hw, state.d))
+    # Final position = projection + right * display_offset
+    pos_u = best_proj_u + right_u * display_offset
+    pos_v = best_proj_v + right_v * display_offset
 
-    # ── Compute final position from (s, d) ──
-    cu, cv = lookup_position(track_map, state.s)
-    nu, nv = lookup_normal(track_map, state.s)
-    lateral_offset = state.d
-    state.prev_lateral = lateral_offset
-
-    # Off-track detection
-    TRACK_MARGIN = 1.5
-    candidate_off = abs(lateral_offset) > (hw + TRACK_MARGIN)
-    if candidate_off:
-        state.off_track_count += 1
-    else:
-        state.off_track_count = 0
-    is_off_track = state.off_track_count >= 5
-
-    pos_u = cu + nu * lateral_offset
-    pos_v = cv + nv * lateral_offset
-
-    state.prev_u = pos_u
-    state.prev_v = pos_v
-
+    is_off_track = abs(lateral_offset) > hw
     return pos_u, pos_v, lateral_offset, is_off_track
 
 
@@ -790,7 +607,7 @@ class TrackMapApp:
     OTHER_CAR_RADIUS = 4
     START_COLOR = '#ffffff'
     HUD_COLOR = '#cccccc'
-    UPDATE_MS = 16   # ~60 Hz render rate
+    UPDATE_MS = 100  # 10 Hz
     MAX_OTHER_CARS = 21
     ZOOM_FACTOR = 1.2
     PROGRESS_BAR_H = 8
@@ -806,17 +623,6 @@ class TrackMapApp:
         self.debug = debug
         self.debug_frame_count = 0
         self.follow_player = False
-        # Collision/state tracking for Feature 2
-        self.prev_speed = 0
-        self.prev_damage = 0      # previous total damage for change detection
-        self.prev_session_time = 0 # for real dt computation
-        # Interpolation: prev/curr per car — (seg_idx, offset, timestamp, off_track)
-        self._interp_prev = {}
-        self._interp_curr = {}
-        self._last_packet_time = 0
-        self._last_sim_time = 0
-        self.collision_frames = 0  # frames remaining in collision state
-        self.speed_history = []    # last ~10 frames for sustained decel check
         self.needs_redraw = False
         self.drag_start = None
         self.last_data = None
@@ -1270,53 +1076,11 @@ class TrackMapApp:
                       text=f'{cname}  Age: {tyre_age} laps')
         y += 18
 
-        # ── Front Wing Damage ──
-        fl_wing = player.get('frontLeftWingDamage', 0)
-        fr_wing = player.get('frontRightWingDamage', 0)
-        avg_wing = (fl_wing + fr_wing) / 2.0
-
-        c.create_text(w // 2, y, anchor='n', fill='#8888aa',
-                      font=('Courier', 9, 'bold'), text='FRONT WING')
-        y += 16
-
-        # Color coding: 0-10% green, 10-40% yellow, 40%+ red
-        if avg_wing <= 10:
-            wing_col = '#00cc44'
-        elif avg_wing <= 40:
-            wing_col = '#ffcc00'
-        else:
-            wing_col = '#ff3333'
-
-        # Bar
-        c.create_text(mx, y + bar_h // 2, anchor='w', fill='#666688',
-                      font=('Courier', 8), text='DMG')
-        wbx = mx + 30
-        wbw = w - wbx - mx
-        c.create_rectangle(wbx, y, wbx + wbw, y + bar_h,
-                           fill='#222240', outline='#333355', width=1)
-        fill_w = int(min(avg_wing / 100.0, 1.0) * wbw)
-        if fill_w > 0:
-            c.create_rectangle(wbx, y + 1, wbx + fill_w, y + bar_h - 1,
-                               fill=wing_col, outline='')
-        c.create_text(wbx + wbw + 4, y + bar_h // 2, anchor='w',
-                      fill='#888899', font=('Courier', 7),
-                      text=f'{avg_wing:.0f}%')
-        y += bar_h + 4
-
-        # L/R detail
-        c.create_text(mx + 10, y, anchor='w', fill='#777799',
-                      font=('Courier', 8), text=f'FL: {fl_wing:.0f}%')
-        c.create_text(w // 2 + 10, y, anchor='w', fill='#777799',
-                      font=('Courier', 8), text=f'FR: {fr_wing:.0f}%')
-        y += 16
-
-        # ── Other Damage ──
+        # ── Damage ──
         c.create_text(w // 2, y, anchor='n', fill='#8888aa',
                       font=('Courier', 9, 'bold'), text='DAMAGE')
         y += 16
-        rear_wing = player.get('rearWingDamage', 0)
-        for lbl, val in [('R.Wing', rear_wing),
-                         ('Floor', player.get('floorDamage', 0)),
+        for lbl, val in [('Floor', player.get('floorDamage', 0)),
                          ('Diffuser', player.get('diffuserDamage', 0)),
                          ('Sidepod', player.get('sidepodDamage', 0))]:
             if val == 0:
@@ -1324,7 +1088,7 @@ class TrackMapApp:
                 dt = 'OK'
             else:
                 dc = '#ffcc00' if val < 50 else '#ff3333'
-                dt = f'{val:.0f}%'
+                dt = f'{val}%'
             c.create_text(mx + 10, y, anchor='w', fill='#777799',
                           font=('Courier', 8), text=f'{lbl}:')
             c.create_text(mx + 80, y, anchor='w', fill=dc,
@@ -1361,73 +1125,6 @@ class TrackMapApp:
         c.create_text(w // 2, y, anchor='n', fill='#555577',
                       font=('Courier', 8),
                       text=f'{weather_name}  Track:{track_temp}\u00b0C  Air:{air_temp}\u00b0C')
-        y += 18
-
-        # ── Mini Leaderboard ──
-        all_cars_lb = data.get('allCars', [])
-        nearby_gaps = {c.get('carIndex'): c.get('gap', 0) for c in data.get('nearbyCars', [])}
-        player_pos = player.get('position', 0)
-
-        if all_cars_lb and player_pos > 0:
-            c.create_text(w // 2, y, anchor='n', fill='#8888aa',
-                          font=('Courier', 9, 'bold'), text='LEADERBOARD')
-            y += 16
-
-            # Sort all cars by position ascending (P1, P2, P3...)
-            sorted_cars = sorted(
-                [c for c in all_cars_lb if c.get('position', 0) > 0],
-                key=lambda c: c['position']
-            )
-
-            # Split into ahead (lower position) and behind (higher position)
-            ahead = []
-            behind = []
-            for car in sorted_cars:
-                car_pos = car.get('position', 0)
-                if car_pos == player_pos:
-                    continue
-                car_idx = car.get('carIndex', -1)
-                gap = abs(nearby_gaps.get(car_idx, 0))
-                if car_pos < player_pos:
-                    ahead.append({'position': car_pos, 'gap': gap})
-                else:
-                    behind.append({'position': car_pos, 'gap': gap})
-
-            # Take closest 3 ahead (highest positions = closest to player) and 3 behind
-            ahead = ahead[-3:]  # last 3 = closest positions to player
-            behind = behind[:3] # first 3 = closest positions to player
-
-            row_h = 16
-            font_lb = ('Courier', 8)
-
-            for car in ahead:
-                pos = car['position']
-                gap = car['gap']
-                gap_str = f'+{gap:.2f}' if gap > 0 else ''
-                c.create_text(mx, y, anchor='w', fill='#888899',
-                              font=font_lb, text=f'P{pos}')
-                c.create_text(w - mx, y, anchor='e', fill='#aaaacc',
-                              font=font_lb, text=gap_str)
-                y += row_h
-
-            # Player row
-            c.create_rectangle(mx - 2, y - 2, w - mx + 2, y + row_h - 2,
-                               fill='#2a2a4a', outline='#4444aa', width=1)
-            c.create_text(mx, y, anchor='w', fill='#ffffff',
-                          font=('Courier', 8, 'bold'), text=f'P{player_pos}')
-            c.create_text(w - mx, y, anchor='e', fill='#ffffff',
-                          font=('Courier', 8, 'bold'), text='YOU')
-            y += row_h
-
-            for car in behind:
-                pos = car['position']
-                gap = car['gap']
-                gap_str = f'-{gap:.2f}' if gap > 0 else ''
-                c.create_text(mx, y, anchor='w', fill='#888899',
-                              font=font_lb, text=f'P{pos}')
-                c.create_text(w - mx, y, anchor='e', fill='#aaaacc',
-                              font=font_lb, text=gap_str)
-                y += row_h
 
     # ─── Event Handlers ───────────────────────────────────────────────────
 
@@ -1517,437 +1214,158 @@ class TrackMapApp:
         if isinstance(self.reader, ReplayReader):
             self.reader.set_speed(speed)
 
-    def _interp_pos(self, car_id, now):
-        """Interpolate seg_idx and offset per car, reconstruct from track normals.
-        Returns (u, v) or None if no data available."""
-        curr = self._interp_curr.get(car_id)
-        if curr is None:
-            return None
-
-        n = self.track_map['num_points']
-
-        # Unpack: (seg_idx, offset, sim_time, raw_off, frame_id)
-        if len(curr) >= 5:
-            c_idx, c_off, t1, _, c_fid = curr
-        else:
-            c_idx, c_off, t1, _ = curr
-            c_fid = 0
-
-        prev = self._interp_prev.get(car_id)
-
-        if prev is None:
-            s_render = float(c_idx)
-            offset = c_off
-        else:
-            if len(prev) >= 5:
-                p_idx, p_off, t0, _, p_fid = prev
-            else:
-                p_idx, p_off, t0, _ = prev
-                p_fid = 0
-
-            dt = t1 - t0
-
-            # Compute index delta (wrap-safe)
-            delta = c_idx - p_idx
-            if delta > n // 2:
-                delta -= n
-            elif delta < -n // 2:
-                delta += n
-
-            # Per-car frame gap: if more than 3 frames skipped, snap
-            frame_gap = c_fid - p_fid if c_fid > 0 and p_fid > 0 else 1
-
-            # Large time gap, large index jump, or large frame gap: snap
-            if dt > 0.1 or dt < 0.001 or abs(delta) > n // 4 or frame_gap > 3:
-                s_render = float(c_idx)
-                offset = c_off
-            else:
-                alpha = max(0.0, min(1.0, (now - t0) / dt))
-                s_render = p_idx + alpha * delta
-
-                # Normalize for wrap
-                if s_render >= n:
-                    s_render -= n
-                elif s_render < 0:
-                    s_render += n
-
-                # Interpolate offset
-                offset = p_off + alpha * (c_off - p_off)
-
-        # Light render smoothing (per-car)
-        rk_s = f'_rs_{car_id}'
-        rk_o = f'_ro_{car_id}'
-        prev_s = getattr(self, rk_s, None)
-        prev_o = getattr(self, rk_o, None)
-        if prev_s is not None:
-            # Wrap-safe smoothing on s
-            ds = s_render - prev_s
-            if ds > n // 2: ds -= n
-            elif ds < -n // 2: ds += n
-            s_render = prev_s + 0.15 * ds
-            offset = 0.85 * prev_o + 0.15 * offset
-        setattr(self, rk_s, s_render)
-        setattr(self, rk_o, offset)
-
-        idx = int(round(s_render)) % n
-
-        # Clamp to track width
-        hws = self.track_map['half_widths']
-        hw = hws[idx]
-        offset = max(-hw, min(hw, offset))
-
-        # Reconstruct from track centerline + stored normals
-        us = self.track_map['us']
-        vs = self.track_map['vs']
-        nus = self.track_map['normals_u']
-        nvs = self.track_map['normals_v']
-
-        pos_u = us[idx] + nus[idx] * offset
-        pos_v = vs[idx] + nvs[idx] * offset
-        return pos_u, pos_v
-
-    # ─── Telemetry Processing (ONLY on new UDP data) ────────────────────
-
-    def _process_telemetry(self, data):
-        """Process new telemetry: compute projections and update interp state.
-        Called ONLY when new data arrives (~30 Hz). NO rendering here.
-        Enforces strict frame ordering — each frame processed once, in order."""
-        # Strict frame ordering: skip duplicate/out-of-order frames
-        frame_id = data.get('frameId', 0)
-        last_fid = getattr(self, '_last_processed_frame_id', -1)
-        if frame_id > 0 and frame_id <= last_fid:
-            return  # duplicate or out-of-order — skip
-        self._last_processed_frame_id = frame_id
-
-        player = data.get('player', {})
-        speed = player.get('speed', 0)
-        lap_dist = player.get('lapDistance', 0.0)
-
-        # Compute real dt
-        session_time = data.get('sessionTime', 0)
-        if self.prev_session_time > 0 and session_time > self.prev_session_time:
-            real_dt = max(0.01, min(0.05, session_time - self.prev_session_time))
-        else:
-            real_dt = 1.0 / 30.0
-        self.prev_session_time = session_time
-
-        player_world_pos = player.get('world_pos_m')
-
-        # Player projection
-        pu, pv, player_lat, p_off = compute_track_position(
-            self.track_map, player_world_pos, lap_dist,
-            car_id='player', speed_kmh=speed, dt=real_dt)
-
-        now = time.time()
-        # Use sessionTime as simulation clock (stable, game-driven)
-        sim_time = session_time if session_time > 0 else now
-        frame_id = data.get('frameId', 0)
-        ps = _get_car_state('player')
-        ps.last_seen = now
-        new_s = ps.prev_seg_idx or 0
-        if 'player' in self._interp_curr:
-            self._interp_prev['player'] = self._interp_curr['player']
-        self._interp_curr['player'] = (new_s, player_lat, sim_time, p_off, frame_id)
-        self._last_packet_time = now
-        self._last_sim_time = sim_time
-
-        # Follow player
-        if self.follow_player:
-            self.transform.center_on(pu, pv)
-            self.needs_redraw = True
-
-        player_seg = ps.prev_seg_idx
-
-        # Other cars projection
-        all_cars = data.get('allCars', [])
-        for car in all_cars:
-            car_index = car.get('carIndex', -1)
-            if car_index < 0:
-                continue
-            cid = f'ci_{car_index}'
-            car_dist = car.get('lapDistance', 0.0)
-            car_world_pos = car.get('world_pos_m')
-            car_speed = car.get('speed', 0)
-
-            # Spike filter: reject single-frame world position jumps > 100m
-            prev_wp_key = f'_wp_{cid}'
-            prev_wp = getattr(self, prev_wp_key, None)
-            if car_world_pos and prev_wp:
-                dx = car_world_pos['x'] - prev_wp[0]
-                dz = car_world_pos['z'] - prev_wp[1]
-                if dx * dx + dz * dz > 10000:  # 100m squared
-                    continue  # skip this car's update for this frame
-            if car_world_pos:
-                setattr(self, prev_wp_key, (car_world_pos['x'], car_world_pos['z']))
-
-            cu, cv, car_lat, car_off = compute_track_position(
-                self.track_map, car_world_pos, car_dist,
-                car_id=cid, speed_kmh=car_speed,
-                dt=real_dt, player_seg_idx=player_seg)
-
-            cs = _get_car_state(cid)
-            cs.last_seen = now
-            new_s = cs.prev_seg_idx or 0
-            if cid in self._interp_curr:
-                self._interp_prev[cid] = self._interp_curr[cid]
-            self._interp_curr[cid] = (new_s, car_lat, sim_time, car_off, frame_id)
-
-        # Track which cars were in this frame
-        cars_in_frame = set()
-        cars_in_frame.add('player')
-        for car in all_cars:
-            ci = car.get('carIndex', -1)
-            if ci >= 0:
-                cars_in_frame.add(f'ci_{ci}')
-
-        # For cars NOT in this frame but still active: carry forward with updated time
-        # This prevents freezing — they hold position at current sim_time
-        for cid in list(self._interp_curr.keys()):
-            if cid not in cars_in_frame:
-                curr = self._interp_curr[cid]
-                if len(curr) >= 5:
-                    # Update sim_time to current so interpolation stays smooth
-                    self._interp_prev[cid] = curr
-                    self._interp_curr[cid] = (curr[0], curr[1], sim_time, curr[3], frame_id)
-
-        # Cleanup stale cars (not seen for >3 seconds)
-        STALE_TIMEOUT = 3.0
-        stale_ids = [cid for cid, st in _car_states.items()
-                     if cid != 'player' and now - st.last_seen > STALE_TIMEOUT]
-        for cid in stale_ids:
-            del _car_states[cid]
-            self._interp_curr.pop(cid, None)
-            self._interp_prev.pop(cid, None)
-
-        # Collision detection (telemetry-driven, not render-driven)
-        fl_wing = player.get('frontLeftWingDamage', 0)
-        fr_wing = player.get('frontRightWingDamage', 0)
-        rear_wing = player.get('rearWingDamage', 0)
-        floor_dmg = player.get('floorDamage', 0)
-        total_damage = fl_wing + fr_wing + rear_wing + floor_dmg
-        if total_damage > self.prev_damage + 1:
-            self.collision_frames = 30
-        self.prev_damage = total_damage
-
-        self.speed_history.append(speed)
-        if len(self.speed_history) > 9:
-            self.speed_history.pop(0)
-        if len(self.speed_history) >= 9 and max(self.speed_history) - speed > 40:
-            self.collision_frames = 30
-        self.prev_speed = speed
-
-        # Debug logging
-        if self.debug:
-            self.debug_frame_count += 1
-            if self.debug_frame_count % 30 == 1:
-                phase_names = {_ST_INIT: 'INIT', _ST_TRACKING: 'TRACK',
-                               _ST_UNSTABLE: 'UNSTBL', _ST_RECOVERING: 'RECOV'}
-                hw = self.track_map['half_widths'][ps.prev_seg_idx] if ps.prev_seg_idx else 0
-                print(f"[DEBUG] player {phase_names.get(ps.phase, '?')}"
-                      f" seg={ps.prev_seg_idx} offset={player_lat:+.1f}m"
-                      f" hw={hw:.1f}m inv={ps.invalid_count} spd={speed}",
-                      file=sys.stderr, flush=True)
-                if abs(player_lat) < 2.0 and hw > 4.0:
-                    print(f"[DEBUG] WARNING: offset < 2m with hw={hw:.1f}m"
-                          f" — possible compression", file=sys.stderr, flush=True)
-                # State isolation + tracking check
-                if self.debug_frame_count == 1 or self.debug_frame_count % 300 == 0:
-                    ids = set()
-                    for cid, st in _car_states.items():
-                        addr = id(st)
-                        if addr in ids:
-                            print(f"[DEBUG] ERROR: shared state object at {addr}!",
-                                  file=sys.stderr, flush=True)
-                        ids.add(addr)
-                    tracked = sorted(k for k in _car_states if k != 'player')
-                    print(f"[DEBUG] Tracked: {len(_car_states)} cars ({tracked})",
-                          file=sys.stderr, flush=True)
-                    print(f"[DEBUG] State isolation OK: {len(ids)} unique objects",
-                          file=sys.stderr, flush=True)
-
-    # ─── Render (every frame, interpolation only) ─────────────────────
-
-    def _render_cars(self):
-        """Render all cars using interpolated positions. NO projection here."""
-        global _in_render_loop
-        _in_render_loop = True
-        try:
-            self._render_cars_impl()
-        finally:
-            _in_render_loop = False
-
-    def _render_cars_impl(self):
-        if not self._interp_curr:
-            return
-
-        FRAME_DT = 1.0 / 30.0
-        INTERP_DELAY = 2 * FRAME_DT  # ~67ms
-        # Advance sessionTime smoothly between packets using wall clock delta
-        sim_now = getattr(self, '_last_sim_time', 0)
-        wall_at_last_packet = getattr(self, '_last_packet_time', 0)
-        if sim_now > 0 and wall_at_last_packet > 0:
-            wall_elapsed = time.time() - wall_at_last_packet
-            # Clamp to prevent runaway if no packets for a while
-            wall_elapsed = max(0.0, min(wall_elapsed, 0.2))
-            render_now = sim_now + wall_elapsed - INTERP_DELAY
-        else:
-            render_now = time.time() - INTERP_DELAY
-        data = self.last_data or {}
-        player = data.get('player', {})
-        all_cars = data.get('allCars', [])
-
-        # Compute physically-accurate car radius (2m car width → pixels)
-        ppm = self.transform.base_scale * self.transform.zoom  # pixels per meter
-        car_r = max(3, min(8, int(round(2.0 * ppm / 2))))  # 2m width → radius
-        other_r = max(2, min(6, int(round(1.8 * ppm / 2))))
-
-        # Player
-        if 'player' in self._interp_curr:
-            result = self._interp_pos('player', render_now)
-            if result is None:
-                return
-            ipu, ipv = result
-            cx, cy = self.transform.to_canvas(ipu, ipv)
-            r = car_r
-            self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
-
-            p_off = self._interp_curr['player'][3]
-            if self.collision_frames > 0:
-                self.collision_frames -= 1
-                self.canvas.itemconfig(self.car_marker,
-                                       fill='#ff0000', outline='#ff4444')
-            elif p_off:
-                self.canvas.itemconfig(self.car_marker,
-                                       fill='#ffcc00', outline='#ffee44')
-            else:
-                self.canvas.itemconfig(self.car_marker,
-                                       fill='#ffffff', outline='#cccccc')
-            self.canvas.tag_raise(self.car_marker)
-
-            # DRS indicator
-            drs_allowed = player.get('drsAllowed', 0)
-            drs_active = player.get('drs', 0)
-            drs_tag = 'drs_indicator'
-            self.canvas.delete(drs_tag)
-            if drs_active:
-                dr = r + 4
-                self.canvas.create_oval(
-                    cx - dr, cy - dr, cx + dr, cy + dr,
-                    fill='', outline='#00ff44', width=3, tags=drs_tag)
-                self.canvas.create_text(
-                    cx, cy - dr - 6, text='DRS', fill='#00ff44',
-                    font=('Courier', 8, 'bold'), anchor='s', tags=drs_tag)
-            elif drs_allowed:
-                dr = r + 4
-                self.canvas.create_oval(
-                    cx - dr, cy - dr, cx + dr, cy + dr,
-                    fill='', outline='#00aa33', width=2, dash=(3, 3),
-                    tags=drs_tag)
-
-        # Other cars
-        render_cars = []
-        for car in all_cars:
-            car_index = car.get('carIndex', -1)
-            if car_index < 0:
-                continue
-            cid = f'ci_{car_index}'
-            if cid in self._interp_curr:
-                render_cars.append((cid, car.get('position', 0)))
-
-        for i in range(self.MAX_OTHER_CARS):
-            if i < len(render_cars):
-                cid, car_pos = render_cars[i]
-                result = self._interp_pos(cid, render_now)
-                if result is None:
-                    continue
-                cu, cv = result
-                car_off = self._interp_curr[cid][3]
-                ccx, ccy = self.transform.to_canvas(cu, cv)
-                r = other_r
-                self.canvas.coords(
-                    self.other_car_markers[i],
-                    ccx - r, ccy - r, ccx + r, ccy + r)
-                self.canvas.coords(
-                    self.other_car_labels[i], ccx, ccy - r - 2)
-                self.canvas.itemconfig(
-                    self.other_car_labels[i],
-                    text=f'P{car_pos}' if car_pos else '')
-                if car_off:
-                    self.canvas.itemconfig(
-                        self.other_car_markers[i],
-                        fill='#ff9900', outline='#ffbb44')
-                else:
-                    self.canvas.itemconfig(
-                        self.other_car_markers[i],
-                        fill=self.OTHER_CAR_COLOR, outline='#66bbff')
-            else:
-                self.canvas.coords(
-                    self.other_car_markers[i], -20, -20, -20, -20)
-                self.canvas.coords(self.other_car_labels[i], -20, -20)
-                self.canvas.itemconfig(self.other_car_labels[i], text='')
-
-    # ─── Update Loop ──────────────────────────────────────────────────
+    # ─── Update Loop ─────────────────────────────────────────────────────
 
     def _update(self):
-        """Main loop: process telemetry if available, then render."""
+        """Poll telemetry and update canvas."""
         data = self.reader.get_latest()
 
-        # Phase 1: Process new telemetry (projection) — only when data arrives
         if data:
             self.last_data = data
-            self._process_telemetry(data)
-
-        # Phase 2: Redraw track if needed
-        if self.needs_redraw:
-            self._full_redraw()
-
-        # Phase 3: Render cars (interpolation only) — every frame
-        self._render_cars()
-
-        # Phase 4: UI overlays (only update on new data)
-        if data:
             player = data.get('player', {})
-            all_cars = data.get('allCars', [])
+            lap_dist = player.get('lapDistance', 0.0)
             position = player.get('position', 0)
             lap_num = player.get('lapNumber', 0)
             speed = player.get('speed', 0)
             gear = player.get('gear', 0)
             throttle = player.get('throttle', 0.0)
             brake = player.get('brake', 0.0)
-            gear_str = 'N' if gear == 0 else ('R' if gear < 0 else str(gear))
 
+            # Player world position for lateral offset
+            player_world_pos = player.get('world_pos_m')
+
+            # Follow player if enabled
+            if self.follow_player:
+                pu, pv, _, _ = compute_track_position(
+                    self.track_map, player_world_pos, lap_dist)
+                self.transform.center_on(pu, pv)
+                self.needs_redraw = True
+
+            # Redraw track if zoom/pan/resize changed
+            if self.needs_redraw:
+                self._full_redraw()
+
+            # Update other cars
+            all_cars = data.get('allCars', [])
+            debug_offsets = []
+            for i in range(self.MAX_OTHER_CARS):
+                if i < len(all_cars):
+                    car = all_cars[i]
+                    car_dist = car.get('lapDistance', 0.0)
+                    car_pos = car.get('position', 0)
+                    car_world_pos = car.get('world_pos_m')
+                    cu, cv, car_lat, car_off = compute_track_position(
+                        self.track_map, car_world_pos, car_dist)
+                    ccx, ccy = self.transform.to_canvas(cu, cv)
+                    r = self.OTHER_CAR_RADIUS
+                    self.canvas.coords(
+                        self.other_car_markers[i],
+                        ccx - r, ccy - r, ccx + r, ccy + r
+                    )
+                    self.canvas.coords(
+                        self.other_car_labels[i],
+                        ccx, ccy - r - 2
+                    )
+                    self.canvas.itemconfig(
+                        self.other_car_labels[i], text=f'P{car_pos}'
+                    )
+                    if car_off:
+                        self.canvas.itemconfig(
+                            self.other_car_markers[i],
+                            fill='#ff9900', outline='#ffbb44')
+                    else:
+                        self.canvas.itemconfig(
+                            self.other_car_markers[i],
+                            fill=self.OTHER_CAR_COLOR, outline='#66bbff')
+                    if self.debug and car_world_pos:
+                        debug_offsets.append(
+                            f"  Car P{car_pos}: {car_lat:+.1f}m"
+                            f"  world=({car_world_pos.get('x',0):.1f},"
+                            f"{car_world_pos.get('z',0):.1f})"
+                            f"  proj=({cu:.1f},{cv:.1f})")
+                else:
+                    self.canvas.coords(
+                        self.other_car_markers[i], -20, -20, -20, -20
+                    )
+                    self.canvas.coords(self.other_car_labels[i], -20, -20)
+                    self.canvas.itemconfig(self.other_car_labels[i], text='')
+
+            # Player position (with lateral offset from world coords)
+            pu, pv, player_lat, p_off = compute_track_position(
+                self.track_map, player_world_pos, lap_dist)
+            cx, cy = self.transform.to_canvas(pu, pv)
+            r = self.CAR_RADIUS
+            self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
+            if p_off:
+                self.canvas.itemconfig(self.car_marker,
+                                       fill='#ff9900', outline='#ffcc00')
+            else:
+                self.canvas.itemconfig(self.car_marker,
+                                       fill=self.CAR_COLOR, outline='#ff6666')
+            self.canvas.tag_raise(self.car_marker)
+
+            # Debug validation: print lateral offsets every 30 frames (~3s)
+            if self.debug:
+                self.debug_frame_count += 1
+                if self.debug_frame_count % 30 == 1:
+                    wp = player_world_pos or {}
+                    print(f"[DEBUG] Player P{position}: {player_lat:+.1f}m"
+                          f"  world=({wp.get('x',0):.1f},{wp.get('z',0):.1f})"
+                          f"  proj=({pu:.1f},{pv:.1f})",
+                          file=sys.stderr, flush=True)
+                    for line in debug_offsets:
+                        print(f"[DEBUG]{line}", file=sys.stderr, flush=True)
+
+            # HUD
             n_cars = len(all_cars) + 1
-            hud = f"P{position}/{n_cars}  Lap {lap_num}  {speed} km/h  G{gear_str}"
+            hud = f"P{position}/{n_cars}  Lap {lap_num}  {speed} km/h  G{gear}"
             hud += f"  T:{throttle:.0%}  B:{brake:.0%}"
             self.canvas.itemconfig(self.hud_text, text=hud)
 
+            # Zoom info
             zoom_pct = int(self.transform.zoom * 100)
             follow_str = '  [F]ollow ON' if self.follow_player else ''
-            self.canvas.itemconfig(
-                self.zoom_text,
-                text=f'Zoom: {zoom_pct}%{follow_str}  [R]eset  Scroll=Zoom  Drag=Pan')
+            if self.replay_mode:
+                self.canvas.itemconfig(
+                    self.zoom_text,
+                    text=f'Zoom: {zoom_pct}%{follow_str}  [R]eset  Scroll=Zoom  Drag=Pan'
+                )
+            else:
+                self.canvas.itemconfig(
+                    self.zoom_text,
+                    text=f'Zoom: {zoom_pct}%{follow_str}  [R]eset  Scroll=Zoom  Drag=Pan'
+                )
 
+            # Replay progress bar + status
             if self.replay_mode and isinstance(self.reader, ReplayReader):
                 progress = self.reader.progress()
                 bar_y = self.CANVAS_H - 30
                 fill_w = progress * self.CANVAS_W
                 self.canvas.coords(
-                    self.progress_bg, 0, bar_y, self.CANVAS_W, bar_y + self.PROGRESS_BAR_H)
+                    self.progress_bg, 0, bar_y, self.CANVAS_W, bar_y + self.PROGRESS_BAR_H
+                )
                 self.canvas.coords(
-                    self.progress_fill, 0, bar_y, fill_w, bar_y + self.PROGRESS_BAR_H)
+                    self.progress_fill, 0, bar_y, fill_w, bar_y + self.PROGRESS_BAR_H
+                )
                 self.canvas.tag_raise(self.progress_bg)
                 self.canvas.tag_raise(self.progress_fill)
 
                 cur = format_time(self.reader.current_time_s())
                 tot = format_time(self.reader.total_duration_s())
-                rstate = "Playing" if self.reader.playing else "Paused"
+                state = "Playing" if self.reader.playing else "Paused"
                 spd = self.reader.speed
                 spd_str = f"{spd:.1f}x" if spd != int(spd) else f"{int(spd)}x"
                 self.canvas.itemconfig(
                     self.replay_text,
-                    text=f"{rstate}  {cur} / {tot}  [{spd_str}]  Space=Play/Pause  \u2190\u2192=\u00b15s  1-4=Speed")
+                    text=f"{state}  {cur} / {tot}  [{spd_str}]  Space=Play/Pause  \u2190\u2192=\u00b15s  1-4=Speed"
+                )
 
+            # Update stats panel
             self._draw_stats(data)
+        else:
+            # Still handle redraw even without new data (e.g. user zoomed)
+            if self.needs_redraw:
+                self._full_redraw()
 
         self.root.after(self.UPDATE_MS, self._update)
 
