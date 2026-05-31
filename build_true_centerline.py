@@ -21,8 +21,9 @@ import sys
 import os
 import math
 
-EDGE_SHRINK_FACTOR = 0.9  # Shrink edges to remove runoff noise
+EDGE_SHRINK_FACTOR = 1.0  # No shrink — use detected edges directly
 MAX_WIDTH_DELTA_M = 0.5  # Max half_width change per meter (anti-spike clamping)
+MIN_HALF_WIDTH_M = 5.0   # F1 tracks are at least 10m wide (FIA minimum: 12m for new circuits)
 
 # Adaptive per-bin thresholds
 GOOD_COUNT = 20   # Bins with >= this many samples get tight filtering
@@ -368,7 +369,7 @@ def detect_edges_adaptive(offsets_by_bin, n_bins):
             if len(filtered) < MIN_COUNT:
                 filtered = raw_pairs  # fallback if too few pass speed filter
             sigma = 2.0
-            pct_left, pct_right = 15, 85
+            pct_left, pct_right = 5, 95
             conf = CONF_HIGH
         else:
             # Case B: weak data — relaxed filtering
@@ -376,7 +377,7 @@ def detect_edges_adaptive(offsets_by_bin, n_bins):
             if len(filtered) < 5:
                 filtered = raw_pairs
             sigma = 2.5
-            pct_left, pct_right = 10, 90
+            pct_left, pct_right = 5, 95
             conf = CONF_MEDIUM
 
         # Outlier removal
@@ -817,8 +818,9 @@ def main():
         widths[0] = widths[-1] + math.copysign(MAX_WIDTH_DELTA_M, delta)
 
     # Phase 9c: Edge shrink + convert to half_widths
-    half_widths = [w / 2.0 * EDGE_SHRINK_FACTOR for w in widths]
-    print(f"Edge shrink applied (factor={EDGE_SHRINK_FACTOR})")
+    half_widths = [max(MIN_HALF_WIDTH_M, w / 2.0 * EDGE_SHRINK_FACTOR) for w in widths]
+    below_floor = sum(1 for w in widths if w / 2.0 * EDGE_SHRINK_FACTOR < MIN_HALF_WIDTH_M)
+    print(f"Edge shrink applied (factor={EDGE_SHRINK_FACTOR}), min floor={MIN_HALF_WIDTH_M}m ({below_floor} points floored)")
 
     # Phase 10: Use spline as final centerline
     center_u = spline_u
