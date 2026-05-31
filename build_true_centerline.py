@@ -78,7 +78,28 @@ def load_all_samples(jsonl_paths):
                     'source': path,
                 })
                 file_samples += 1
-        print(f"  {path}: {file_samples} samples")
+
+                # Also collect allCars samples for better track width coverage
+                for car in data.get('allCars', []):
+                    cwp = car.get('world_pos_m')
+                    if cwp is None:
+                        continue
+                    cx = cwp.get('x', 0)
+                    cz = cwp.get('z', 0)
+                    cy = cwp.get('y', 0)
+                    if cx == 0 and cz == 0:
+                        continue
+                    cld = car.get('lapDistance', 0)
+                    all_samples.append({
+                        'lap': car.get('lapNumber', 0),
+                        'dist': cld,
+                        'x': cx, 'y': cy, 'z': cz,
+                        'speed': player.get('speed', 0),
+                        'source': path,
+                    })
+                    file_samples += 1
+
+        print(f"  {path}: {file_samples} samples (player + allCars)")
 
     return all_samples, track_length, track_id
 
