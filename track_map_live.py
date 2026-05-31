@@ -1245,6 +1245,9 @@ class TrackMapApp:
             if self.needs_redraw:
                 self._full_redraw()
 
+            # Pixels per meter for physically-scaled rendering
+            ppm = self.transform.base_scale * self.transform.zoom
+
             # Update other cars
             all_cars = data.get('allCars', [])
             debug_offsets = []
