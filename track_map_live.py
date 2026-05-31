@@ -1257,7 +1257,7 @@ class TrackMapApp:
                     cu, cv, car_lat, car_off = compute_track_position(
                         self.track_map, car_world_pos, car_dist)
                     ccx, ccy = self.transform.to_canvas(cu, cv)
-                    r = self.OTHER_CAR_RADIUS
+                    r = max(2, round(0.9 * ppm))  # 0.9m radius = 1.8m diameter
                     self.canvas.coords(
                         self.other_car_markers[i],
                         ccx - r, ccy - r, ccx + r, ccy + r
@@ -1294,7 +1294,9 @@ class TrackMapApp:
             pu, pv, player_lat, p_off = compute_track_position(
                 self.track_map, player_world_pos, lap_dist)
             cx, cy = self.transform.to_canvas(pu, pv)
-            r = self.CAR_RADIUS
+            # Physical car size: 2.0m width converted to pixels (no arbitrary clamp)
+            ppm = self.transform.base_scale * self.transform.zoom
+            r = max(3, round(1.0 * ppm))  # 1.0m radius = 2.0m diameter
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
             if p_off:
                 self.canvas.itemconfig(self.car_marker,
@@ -1320,6 +1322,10 @@ class TrackMapApp:
             n_cars = len(all_cars) + 1
             hud = f"P{position}/{n_cars}  Lap {lap_num}  {speed} km/h  G{gear}"
             hud += f"  T:{throttle:.0%}  B:{brake:.0%}"
+            idx = int(lap_dist % self.track_map['track_length']) % self.track_map['num_points']
+            hw = self.track_map['half_widths'][idx]
+            ratio = player_lat / hw if hw > 0 else 0
+            hud += f"\nOffset: {player_lat:+.1f}m / {hw:.1f}m  ({ratio:+.0%})"
             self.canvas.itemconfig(self.hud_text, text=hud)
 
             # Zoom info
