@@ -601,7 +601,9 @@ class TrackMapApp:
     CANVAS_H = 600
     BG_COLOR = '#1a1a2e'
     TRACK_COLOR = '#4a4a6a'
-    CAR_COLOR = '#ff3333'
+    CAR_COLOR = '#ffffff'
+    CAR_COLLISION_COLOR = '#ff3333'
+    COLLISION_DURATION = 2.5  # seconds to show red after damage
     CAR_RADIUS = 6
     OTHER_CAR_COLOR = '#3399ff'
     OTHER_CAR_RADIUS = 4
@@ -623,6 +625,9 @@ class TrackMapApp:
         self.debug = debug
         self.debug_frame_count = 0
         self.follow_player = False
+        # Collision detection state
+        self._prev_damage = None  # (fl_wing, fr_wing, rear_wing, floor, sidepod)
+        self._collision_time = 0  # time.time() of last collision
         self.needs_redraw = False
         self.drag_start = None
         self.last_data = None
@@ -1301,12 +1306,37 @@ class TrackMapApp:
             ppm = self.transform.base_scale * self.transform.zoom
             r = max(3, round(1.0 * ppm))  # 1.0m radius = 2.0m diameter
             self.canvas.coords(self.car_marker, cx - r, cy - r, cx + r, cy + r)
-            if p_off:
+
+            # Collision detection: check for damage increases
+            fl_wing = player.get('frontLeftWingDamage', 0)
+            fr_wing = player.get('frontRightWingDamage', 0)
+            rear_wing = player.get('rearWingDamage', 0)
+            floor_dmg = player.get('floorDamage', 0)
+            sidepod_dmg = player.get('sidepodDamage', 0)
+            cur_damage = (fl_wing, fr_wing, rear_wing, floor_dmg, sidepod_dmg)
+
+            if self._prev_damage is not None:
+                for i_d in range(5):
+                    if cur_damage[i_d] > self._prev_damage[i_d] + 0.5:
+                        self._collision_time = time.time()
+                        labels = ['FL wing', 'FR wing', 'Rear wing', 'Floor', 'Sidepod']
+                        print(f"[collision] {labels[i_d]}: "
+                              f"{self._prev_damage[i_d]:.0f} -> {cur_damage[i_d]:.0f}",
+                              file=sys.stderr, flush=True)
+                        break
+            self._prev_damage = cur_damage
+
+            # Car color: white normal, orange off-track, red collision
+            now_t = time.time()
+            if now_t - self._collision_time < self.COLLISION_DURATION:
+                self.canvas.itemconfig(self.car_marker,
+                                       fill=self.CAR_COLLISION_COLOR, outline='#ff6666')
+            elif p_off:
                 self.canvas.itemconfig(self.car_marker,
                                        fill='#ff9900', outline='#ffcc00')
             else:
                 self.canvas.itemconfig(self.car_marker,
-                                       fill=self.CAR_COLOR, outline='#ff6666')
+                                       fill=self.CAR_COLOR, outline='#cccccc')
             self.canvas.tag_raise(self.car_marker)
 
             # Debug validation: print lateral offsets every 30 frames (~3s)
