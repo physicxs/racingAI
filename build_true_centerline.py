@@ -18,12 +18,10 @@ Usage:
 
 import json
 import sys
-import os
 import math
 
-EDGE_SHRINK_FACTOR = 1.0  # No shrink — use detected edges directly
+EDGE_SHRINK_FACTOR = 0.9  # Shrink edges to remove runoff noise
 MAX_WIDTH_DELTA_M = 0.5  # Max half_width change per meter (anti-spike clamping)
-MIN_HALF_WIDTH_M = 5.0   # F1 tracks are at least 10m wide (FIA minimum: 12m for new circuits)
 
 # Adaptive per-bin thresholds
 GOOD_COUNT = 20   # Bins with >= this many samples get tight filtering
@@ -78,28 +76,7 @@ def load_all_samples(jsonl_paths):
                     'source': path,
                 })
                 file_samples += 1
-
-                # Also collect allCars samples for better track width coverage
-                for car in data.get('allCars', []):
-                    cwp = car.get('world_pos_m')
-                    if cwp is None:
-                        continue
-                    cx = cwp.get('x', 0)
-                    cz = cwp.get('z', 0)
-                    cy = cwp.get('y', 0)
-                    if cx == 0 and cz == 0:
-                        continue
-                    cld = car.get('lapDistance', 0)
-                    all_samples.append({
-                        'lap': car.get('lapNumber', 0),
-                        'dist': cld,
-                        'x': cx, 'y': cy, 'z': cz,
-                        'speed': player.get('speed', 0),
-                        'source': path,
-                    })
-                    file_samples += 1
-
-        print(f"  {path}: {file_samples} samples (player + allCars)")
+        print(f"  {path}: {file_samples} samples")
 
     return all_samples, track_length, track_id
 
@@ -390,7 +367,7 @@ def detect_edges_adaptive(offsets_by_bin, n_bins):
             if len(filtered) < MIN_COUNT:
                 filtered = raw_pairs  # fallback if too few pass speed filter
             sigma = 2.0
-            pct_left, pct_right = 5, 95
+            pct_left, pct_right = 15, 85
             conf = CONF_HIGH
         else:
             # Case B: weak data — relaxed filtering
@@ -398,7 +375,7 @@ def detect_edges_adaptive(offsets_by_bin, n_bins):
             if len(filtered) < 5:
                 filtered = raw_pairs
             sigma = 2.5
-            pct_left, pct_right = 5, 95
+            pct_left, pct_right = 10, 90
             conf = CONF_MEDIUM
 
         # Outlier removal
@@ -839,9 +816,8 @@ def main():
         widths[0] = widths[-1] + math.copysign(MAX_WIDTH_DELTA_M, delta)
 
     # Phase 9c: Edge shrink + convert to half_widths
-    half_widths = [max(MIN_HALF_WIDTH_M, w / 2.0 * EDGE_SHRINK_FACTOR) for w in widths]
-    below_floor = sum(1 for w in widths if w / 2.0 * EDGE_SHRINK_FACTOR < MIN_HALF_WIDTH_M)
-    print(f"Edge shrink applied (factor={EDGE_SHRINK_FACTOR}), min floor={MIN_HALF_WIDTH_M}m ({below_floor} points floored)")
+    half_widths = [w / 2.0 * EDGE_SHRINK_FACTOR for w in widths]
+    print(f"Edge shrink applied (factor={EDGE_SHRINK_FACTOR})")
 
     # Phase 10: Use spline as final centerline
     center_u = spline_u
@@ -888,12 +864,10 @@ def main():
     print("\nValidation:")
     validate(center_u, center_v, half_widths, ref_u, ref_v)
 
-    # Output — save to "Track Map Builds/" folder by default
-    MAP_OUTPUT_DIR = "Track Map Builds"
-    os.makedirs(MAP_OUTPUT_DIR, exist_ok=True)
+    # Output
     if output_path is None:
         track_name = f"track_{track_id}" if track_id is not None else "track_unknown"
-        output_path = os.path.join(MAP_OUTPUT_DIR, f"{track_name}_true_map.json")
+        output_path = f"{track_name}_true_map.json"
 
     write_track_map(output_path, track_id, track_length, u_key, v_key,
                     center_u, center_v, half_widths, spline_normals_u, spline_normals_v)
