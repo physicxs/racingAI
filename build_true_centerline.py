@@ -20,7 +20,7 @@ import json
 import sys
 import math
 
-EDGE_SHRINK_FACTOR = 0.9  # Shrink edges to remove runoff noise
+EDGE_SHRINK_FACTOR = 0.9  # Shrink for centerline computation (preserves shape)
 MAX_WIDTH_DELTA_M = 0.5  # Max half_width change per meter (anti-spike clamping)
 
 # Adaptive per-bin thresholds
@@ -815,9 +815,9 @@ def main():
     if abs(delta) > MAX_WIDTH_DELTA_M:
         widths[0] = widths[-1] + math.copysign(MAX_WIDTH_DELTA_M, delta)
 
-    # Phase 9c: Edge shrink + convert to half_widths
-    half_widths = [w / 2.0 * EDGE_SHRINK_FACTOR for w in widths]
-    print(f"Edge shrink applied (factor={EDGE_SHRINK_FACTOR})")
+    # Phase 9c: Convert to half_widths (no shrink on final output)
+    half_widths = [w / 2.0 for w in widths]
+    print(f"Half-widths computed (centerline used shrink={EDGE_SHRINK_FACTOR}, output unshrunk)")
 
     # Phase 10: Use spline as final centerline
     center_u = spline_u
